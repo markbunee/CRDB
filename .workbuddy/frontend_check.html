@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>医药销售数据库管理</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --card: #ffffff; --border: #e4e7eb;
+    --text: #1f2937; --muted: #6b7280;
+    --primary: #2563eb; --primary-hover: #1d4ed8;
+    --danger: #dc2626; --danger-hover: #b91c1c;
+    --success: #059669;
+    --th-bg: #f3f4f6; --row-hover: #f9fafb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); line-height: 1.5; }
+  header { background: linear-gradient(135deg,#1e3a8a,#2563eb); color:#fff;
+           padding: 18px 28px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header p { font-size: 13px; opacity: .85; margin-top: 2px; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
+  /* 数据库切换 Tab */
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { background: var(--card); border: 1px solid var(--border);
+         border-radius: 8px; padding: 10px 18px; cursor: pointer;
+         font-size: 14px; font-weight: 500; color: var(--muted);
+         transition: all .15s; display:flex; align-items:center; gap:8px; }
+  .tab:hover { border-color: var(--primary); color: var(--primary); }
+  .tab.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .tab .badge { background: rgba(0,0,0,.12); border-radius: 10px;
+                padding: 1px 8px; font-size: 12px; }
+  .tab.active .badge { background: rgba(255,255,255,.25); }
+  /* 工具栏 */
+  .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+             background: var(--card); padding: 14px 16px; border-radius: 8px;
+             margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .toolbar input[type=text] { flex: 1; min-width: 200px; padding: 8px 12px;
+        border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
+  .toolbar input[type=text]:focus { outline: none; border-color: var(--primary); }
+  .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+         font-size: 14px; font-weight: 500; transition: all .15s; display:inline-flex;
+         align-items:center; gap:6px; }
+  .btn-primary { background: var(--primary); color:#fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-success { background: var(--success); color:#fff; }
+  .btn-success:hover { filter: brightness(.92); }
+  .btn-danger { background: var(--danger); color:#fff; }
+  .btn-danger:hover { background: var(--danger-hover); }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { border-color: var(--primary); color: var(--primary); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .info { font-size: 13px; color: var(--muted); }
+  /* 表格 */
+  .table-card { background: var(--card); border-radius: 8px; overflow: hidden;
+                box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { background: var(--th-bg); padding: 10px 12px; text-align: left;
+             font-weight: 600; color: var(--text); white-space: nowrap;
+             border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+             position: sticky; top: 0; }
+  thead th:hover { background: #e5e7eb; }
+  thead th .sort-ico { opacity: .4; margin-left: 4px; font-size: 11px; }
+  thead th.sorted .sort-ico { opacity: 1; color: var(--primary); }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border);
+             white-space: nowrap; max-width: 320px; overflow: hidden;
+             text-overflow: ellipsis; }
+  tbody tr:hover { background: var(--row-hover); }
+  tbody tr .actions { opacity: .0; transition: opacity .15s; white-space: nowrap; }
+  tbody tr:hover .actions { opacity: 1; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .empty { padding: 48px; text-align: center; color: var(--muted); }
+  /* 分页 */
+  .pagination { display: flex; justify-content: space-between; align-items: center;
+                padding: 12px 16px; border-top: 1px solid var(--border); flex-wrap: wrap; gap: 8px;}
+  .pagination .pages { display: flex; gap: 4px; }
+  .pagination button { min-width: 34px; height: 34px; border: 1px solid var(--border);
+        background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .pagination button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+  .pagination button.active { background: var(--primary); color:#fff; border-color: var(--primary); }
+  .pagination button:disabled { opacity: .4; cursor: not-allowed; }
+  /* 模态框 */
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+        display: none; align-items: flex-start; justify-content: center; z-index: 100;
+        padding: 40px 16px; overflow-y: auto; }
+  .modal-mask.show { display: flex; }
+  .modal { background:#fff; border-radius: 10px; width: 100%; max-width: 640px;
+        box-shadow: 0 20px 50px rgba(0,0,0,.25); overflow: hidden; }
+  .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border);
+        display:flex; justify-content:space-between; align-items:center; }
+  .modal-head h3 { font-size: 16px; }
+  .modal-body { padding: 18px 20px; max-height: 60vh; overflow-y: auto; }
+  .field { margin-bottom: 14px; }
+  .field label { display:block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight:500; }
+  .field input, .field textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+        border-radius: 6px; font-size: 14px; font-family: inherit; }
+  .field input:focus, .field textarea:focus { outline:none; border-color: var(--primary); }
+  .field .type-hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .modal-foot { padding: 14px 20px; border-top: 1px solid var(--border);
+        display: flex; justify-content: flex-end; gap: 10px; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        background: #1f2937; color:#fff; padding: 10px 20px; border-radius: 8px;
+        font-size: 14px; opacity: 0; transition: opacity .2s; z-index: 200; }
+  .toast.show { opacity: 1; }
+  .loading { text-align:center; padding: 60px; color: var(--muted); }
+  .loading .spin { display:inline-block; width: 26px; height: 26px;
+        border: 3px solid var(--border); border-top-color: var(--primary);
+        border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .field-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>医药销售数据库管理系统</h1>
+  <p>大参林 · 高济 · 海王 — 三库数据查询与维护</p>
+</header>
+
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+
+  <div class="toolbar">
+    <input type="text" id="search" placeholder="输入关键字搜索（门店/商品/公司等）" />
+    <button class="btn btn-success" id="btnAdd">＋ 新增</button>
+    <button class="btn btn-ghost" id="btnExport">⬇ 导出全部</button>
+    <span class="info" id="info"></span>
+  </div>
+
+  <div class="table-card">
+    <div class="table-wrap">
+      <table id="dataTable">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
+  </div>
+</div>
+
+<!-- 编辑模态框 -->
+<div class="modal-mask" id="modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modalTitle">新增记录</h3>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" id="btnSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let dbs = [];
+let current = null;          // 当前数据库配置
+let page = 1, pageSize = 20;
+let search = '', sort = {by:'', dir:'asc'};
+let editingId = null;
+
+// ---------- 初始化 ----------
+async function init() {
+  showLoading('加载数据库信息…');
+  try {
+    const res = await fetch(`${API}/api/dbs`);
+    dbs = await res.json();
+    renderTabs();
+    if (dbs.length) selectDb(dbs[0].key);
+  } catch(e) {
+    document.querySelector('tbody').innerHTML =
+      `<tr><td><div class="empty">无法连接后端，请确认服务已启动。<br>${e}</div></td></tr>`;
+  }
+}
+
+function renderTabs() {
+  const el = document.getElementById('tabs');
+  el.innerHTML = dbs.map(d => `
+    <div class="tab ${d.key===current?.key?'active':''}" data-key="${d.key}" onclick="selectDb('${d.key}')">
+      ${d.label}
+      <span class="badge">${d.row_count}</span>
+    </div>`).join('');
+}
+
+function selectDb(key) {
+  current = dbs.find(d => d.key === key);
+  page = 1; search = ''; sort = {by:'', dir:'asc'};
+  document.getElementById('search').value = '';
+  renderTabs();
+  loadRows();
+}
+
+// ---------- 加载数据 ----------
+async function loadRows() {
+  showLoading('加载中…');
+  const params = new URLSearchParams({page, page_size: pageSize});
+  if (search) params.set('search', search);
+  if (sort.by) { params.set('sort_by', sort.by); params.set('sort_dir', sort.dir); }
+  try {
+    const res = await fetch(`${API}/api/${current.key}/rows?${params}`);
+    const data = await res.json();
+    renderTable(data);
+    renderPagination(data);
+    document.getElementById('info').textContent =
+      `共 ${data.total} 条 · 第 ${page}/${Math.max(1, Math.ceil(data.total/pageSize))} 页`;
+  } catch(e) {
+    document.querySelector('tbody').innerHTML =
+      `<tr><td><div class="empty">加载失败：${e}</div></td></tr>`;
+  }
+}
+
+function showLoading(msg) {
+  document.querySelector('tbody').innerHTML =
+    `<tr><td colspan="99"><div class="loading"><span class="spin"></span><div style="margin-top:10px">${msg}</div></div></td></tr>`;
+}
+
+function renderTable(data) {
+  const cols = current.columns;
+  const thead = document.querySelector('thead');
+  const thHtml = ['<tr><th>id</th>'] .concat('');
+  let th = '<tr><th data-col="id">id <span class="sort-ico"></span></th>';
+  cols.forEach(c => {
+    const sorted = sort.by === c.name ? 'sorted' : '';
+    const ico = sort.by === c.name ? (sort.dir==='asc'?'▲':'▼') : '↕';
+    th += `<th class="${sorted}" data-col="${escapeAttr(c.name)}">${escapeHtml(c.name)} <span class="sort-ico">${ico}</span></th>`;
+  });
+  th += '<th style="cursor:default">操作</th></tr>';
+  thead.innerHTML = th;
+  thead.querySelectorAll('th[data-col]').forEach(el => {
+    el.onclick = () => {
+      const col = el.dataset.col;
+      if (sort.by === col) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+      else { sort.by = col; sort.dir = 'asc'; }
+      loadRows();
+    };
+  });
+
+  const tbody = document.querySelector('tbody');
+  if (!data.rows.length) {
+    tbody.innerHTML = `<tr><td colspan="${cols.length+2}"><div class="empty">暂无数据</div></td></tr>`;
+    return;
+  }
+  const numSet = new Set(current.numeric_columns);
+  tbody.innerHTML = data.rows.map(r => {
+    let tds = `<td class="num">${r.id ?? ''}</td>`;
+    cols.forEach(c => {
+      let v = r[c.name];
+      const disp = v === null || v === undefined ? '<span style="color:#bbb">—</span>' : escapeHtml(String(v));
+      tds += `<td class="${numSet.has(c.name)?'num':''}" title="${escapeAttr(String(v??''))}">${disp}</td>`;
+    });
+    tds += `<td class="actions">
+      <button class="btn btn-ghost btn-sm" onclick="openEdit(${r.id})">编辑</button>
+      <button class="btn btn-danger btn-sm" onclick="delRow(${r.id})">删除</button>
+    </td>`;
+    return `<tr>${tds}</tr>`;
+  }).join('');
+}
+
+function renderPagination(data) {
+  const total = data.total;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const el = document.getElementById('pagination');
+  let pgs = [];
+  const start = Math.max(1, page - 2);
+  const end = Math.min(totalPages, page + 2);
+  for (let i = start; i <= end; i++) pgs.push(i);
+  let html = `<div>每页
+    <select onchange="pageSize=+this.value; page=1; loadRows()" style="padding:4px;border:1px solid var(--border);border-radius:6px">
+      ${[20,50,100].map(n=>`<option ${n===pageSize?'selected':''}>${n}</option>`).join('')}
+    </select> 条</div><div class="pages">`;
+  html += `<button ${page<=1?'disabled':''} onclick="goto(1)">«</button>`;
+  html += `<button ${page<=1?'disabled':''} onclick="goto(${page-1})">‹</button>`;
+  pgs.forEach(p => html += `<button class="${p===page?'active':''}" onclick="goto(${p})">${p}</button>`);
+  html += `<button ${page>=totalPages?'disabled':''} onclick="goto(${page+1})">›</button>`;
+  html += `<button ${page>=totalPages?'disabled':''} onclick="goto(${totalPages})">»</button>`;
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+function goto(p) { page = p; loadRows(); }
+
+// ---------- 搜索 ----------
+let searchTimer;
+document.getElementById('search').addEventListener('input', e => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { search = e.target.value.trim(); page = 1; loadRows(); }, 350);
+});
+document.getElementById('search').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { search = e.target.value.trim(); page = 1; loadRows(); }
+});
+
+// ---------- 新增 / 编辑 ----------
+document.getElementById('btnAdd').onclick = () => openEdit(null);
+
+function openEdit(id) {
+  editingId = id;
+  document.getElementById('modalTitle').textContent = id === null ? '新增记录' : `编辑记录 #${id}`;
+  const cols = current.columns;
+  // 找当前行数据预填
+  let row = null;
+  if (id !== null) {
+    // 重新拉取该页数据里匹配的行
+  }
+  const body = document.getElementById('modalBody');
+  body.innerHTML = cols.map(c => `
+    <div class="field">
+      <label>${escapeHtml(c.name)}</label>
+      <input data-col="${escapeAttr(c.name)}" data-type="${c.type}" value="${id!==null && row ? escapeAttr(row[c.name] ?? '') : ''}" placeholder="留空则不填写" />
+      <div class="type-hint">${c.type}</div>
+    </div>`).join('');
+  // 如果是编辑，拉取该行数据填入
+  if (id !== null) fillEdit(id);
+  document.getElementById('modal').classList.add('show');
+}
+
+async function fillEdit(id) {
+  // 通过导出或重新查询获取该行
+  try {
+    const res = await fetch(`${API}/api/${current.key}/rows?page=1&page_size=10000`);
+    const data = await res.json();
+    const row = data.rows.find(r => r.id === id);
+    if (row) {
+      document.querySelectorAll('#modalBody input').forEach(inp => {
+        const v = row[inp.dataset.col];
+        if (v !== null && v !== undefined) inp.value = v;
+      });
+    }
+  } catch(e) { console.warn(e); }
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('show'); editingId = null; }
+
+document.getElementById('btnSave').onclick = async () => {
+  const inputs = document.querySelectorAll('#modalBody input');
+  const body = {};
+  inputs.forEach(inp => {
+    const v = inp.value.trim();
+    if (v !== '') {
+      const t = inp.dataset.type;
+      if (t.includes('INT') || t.includes('NUMERIC')) {
+        const n = Number(v);
+        body[inp.dataset.col] = isNaN(n) ? v : n;
+      } else {
+        body[inp.dataset.col] = v;
+      }
+    }
+  });
+  if (Object.keys(body).length === 0) { toast('请至少填写一个字段'); return; }
+  try {
+    const method = editingId === null ? 'POST' : 'PUT';
+    const url = editingId === null
+      ? `${API}/api/${current.key}/rows`
+      : `${API}/api/${current.key}/rows/${editingId}`;
+    const res = await fetch(url, {
+      method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if (!res.ok) { const e = await res.json(); throw JSON.stringify(e.detail || e); }
+    toast(editingId === null ? '新增成功' : '更新成功');
+    closeModal();
+    // 刷新 tab 行数
+    const r = await fetch(`${API}/api/dbs`); dbs = await r.json(); renderTabs();
+    loadRows();
+  } catch(e) { toast('保存失败: ' + e); }
+};
+
+async function delRow(id) {
+  if (!confirm(`确认删除记录 #${id} 吗？`)) return;
+  try {
+    const res = await fetch(`${API}/api/${current.key}/rows/${id}`, {method:'DELETE'});
+    if (!res.ok) throw '删除失败';
+    toast('删除成功');
+    const r = await fetch(`${API}/api/dbs`); dbs = await r.json(); renderTabs();
+    loadRows();
+  } catch(e) { toast(e); }
+}
+
+// ---------- 导出 ----------
+document.getElementById('btnExport').onclick = async () => {
+  showLoading('导出中…');
+  try {
+    const res = await fetch(`${API}/api/${current.key}/export`);
+    const data = await res.json();
+    downloadCSV(data.columns, data.rows, `${current.label}_导出.csv`);
+    loadRows();
+  } catch(e) { toast('导出失败: ' + e); loadRows(); }
+};
+
+function downloadCSV(cols, rows, filename) {
+  const esc = v => {
+    if (v === null || v === undefined) return '';
+    const s = String(v).replace(/"/g, '""');
+    return /[",\n]/.test(s) ? `"${s}"` : s;
+  };
+  const lines = [cols.map(esc).join(',')];
+  rows.forEach(r => lines.push(cols.map(c => esc(r[c])).join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
+// ---------- 工具 ----------
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function escapeAttr(s){return String(s).replace(/"/g,'&quot;');}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+init();
+</script>
+</body>
+</html>

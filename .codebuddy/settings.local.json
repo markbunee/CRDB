@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "data@cb_teams_marketplace": true,
+    "document-skills@cb_teams_marketplace": true
+  }
+}

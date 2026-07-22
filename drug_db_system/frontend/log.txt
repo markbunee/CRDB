@@ -1,0 +1,236 @@
+2026-07-21 18:41:17 | ERROR   | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-07-21 18:42:07 | ERROR   | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/stats/click: {"detail":"统计失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-07-21 18:46:30 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dashenlin/rows -> 200 (256ms)
+API /api/dashenlin/stats/click -> 200 (256ms)
+API /api/dashenlin/rows -> 200 (254ms)
+API /api/dashenlin/stats/click -> 200 (254ms)
+API /api/dbs -> 200 (255ms)
+2026-07-21 20:14:16 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dbs -> 200 (80ms)
+API /api/dashenlin/stats/click -> 200 (179ms)
+API /api/dashenlin/rows -> 200 (179ms)
+API /api/dashenlin/rows -> 200 (229ms)
+API /api/dashenlin/stats/click -> 200 (230ms)
+2026-07-21 20:21:24 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dashenlin/rows -> 200 (65ms)
+API /api/dbs -> 200 (64ms)
+API /api/dashenlin/stats/click -> 200 (65ms)
+API /api/dashenlin/rows -> 200 (63ms)
+API /api/dashenlin/stats/click -> 200 (63ms)
+2026-07-21 20:22:17 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dashenlin/rows -> 200 (47ms)
+API /api/dashenlin/stats/click -> 200 (48ms)
+API /api/dbs -> 200 (47ms)
+API /api/dashenlin/rows -> 200 (47ms)
+API /api/dashenlin/stats/click -> 200 (47ms)
+2026-07-21 20:22:17 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dashenlin/stats/click -> 200 (43ms)
+API /api/dbs -> 200 (43ms)
+API /api/dashenlin/rows -> 200 (43ms)
+API /api/dashenlin/stats/click -> 200 (44ms)
+API /api/dashenlin/rows -> 200 (44ms)
+2026-07-21 20:22:41 | INFO    | frontend | main | 前端应用已挂载
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+执行统计: 日期=2026-07-01~2026-07-21 编码=全部 城市=全部 省份=全部
+API /api/dashenlin/rows -> 200 (46ms)
+API /api/dashenlin/stats/click -> 200 (46ms)
+API /api/dbs -> 200 (45ms)
+API /api/dashenlin/rows -> 200 (82ms)
+API /api/dashenlin/stats/click -> 200 (85ms)
+2026-07-21 20:23:20 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (64ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (16ms)
+2026-07-21 20:23:36 | INFO    | frontend | request | API /api/dbs -> 200 (329ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (238ms)
+2026-07-21 20:23:38 | INFO    | frontend | request | API /api/dbs -> 200 (318ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (267ms)
+2026-07-21 20:23:55 | INFO    | frontend | request | API /api/dbs -> 200 (331ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (250ms)
+2026-07-21 20:24:56 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (348ms)
+2026-07-21 20:25:00 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (326ms)
+2026-07-21 20:25:04 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (327ms)
+2026-07-21 20:25:08 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (319ms)
+2026-07-21 20:30:15 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (45ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (18ms)
+2026-07-21 20:34:12 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (97ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (23ms)
+2026-07-21 20:34:25 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (18ms)
+2026-07-21 20:34:42 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (14ms)
+2026-07-21 20:34:49 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (20ms)
+2026-07-21 20:34:57 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (20ms)
+API /api/dashenlin/rows -> 200 (12ms)
+API /api/dashenlin/rows -> 200 (12ms)
+2026-07-21 20:35:06 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (17ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (22ms)
+2026-07-21 20:35:13 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 20:35:19 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 20:35:21 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (14ms)
+2026-07-21 20:35:24 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 20:35:29 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 20:35:39 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (14ms)
+2026-07-21 20:36:54 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (25ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (27ms)
+2026-07-21 20:38:34 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (27ms)
+2026-07-21 20:38:37 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (14ms)
+2026-07-21 20:38:44 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (22ms)
+2026-07-21 20:50:04 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (24ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (16ms)
+2026-07-21 21:18:18 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (46ms)
+API /api/dashenlin/rows -> 200 (24ms)
+2026-07-21 21:18:34 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (26ms)
+API /api/dashenlin/rows -> 200 (14ms)
+API /api/dashenlin/rows -> 200 (16ms)
+2026-07-21 21:23:50 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (18ms)
+2026-07-21 21:25:37 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (19ms)
+2026-07-21 21:25:41 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 21:25:48 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+API /api/dashenlin/rows -> 200 (15ms)
+API /api/dashenlin/rows -> 200 (17ms)
+API /api/dashenlin/rows -> 200 (12ms)
+API /api/dashenlin/rows -> 200 (14ms)
+2026-07-21 21:25:50 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+API /api/dashenlin/rows -> 200 (15ms)
+API /api/dashenlin/rows -> 200 (13ms)
+2026-07-21 21:26:00 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (19ms)
+2026-07-21 21:26:02 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 22:39:01 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-07-21 22:39:28 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-07-21 22:40:00 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5432 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-07-21 22:41:00 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (103ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (32ms)
+2026-07-21 22:41:21 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (18ms)
+2026-07-21 22:45:38 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (62ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (16ms)
+2026-07-21 22:45:47 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 22:47:22 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (65ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (16ms)
+2026-07-21 22:47:31 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 22:48:19 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (66ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 22:48:28 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 22:50:52 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (71ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 22:51:38 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 23:17:46 | INFO    | frontend | request | API /api/dbs -> 200 (26ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 23:38:22 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (95ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (33ms)
+2026-07-21 23:38:43 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (76ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (24ms)
+2026-07-21 23:39:15 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (74ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (15ms)
+2026-07-21 23:42:50 | ERROR   | frontend | request | API 500 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+API 请求失败 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+门店数统计失败: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+2026-07-21 23:42:54 | ERROR   | frontend | request | API 500 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+API 请求失败 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+门店数统计失败: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+2026-07-21 23:42:58 | ERROR   | frontend | request | API 500 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+API 请求失败 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+门店数统计失败: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-07-21' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+2026-07-21 23:43:09 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (17ms)
+2026-07-21 23:43:29 | ERROR   | frontend | request | API 500 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-01-01' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+API 请求失败 /api/dashenlin/stats/store_city: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-01-01' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+门店数统计失败: {"detail":"统计失败: invalid input syntax for type bigint: \"1058746 1086127 1091138\"\nLINE 1: ...期\" <= '2026-01-01' AND \"商品编码\" IN ('1058746', '1058746 1...\n                                                             ^\n"}
+2026-07-21 23:43:33 | INFO    | frontend | request | API /api/dashenlin/stats/store_city -> 200 (24ms)
+2026-07-21 23:43:37 | INFO    | frontend | request | API /api/dashenlin/stats/store_city -> 200 (15ms)
+2026-07-21 23:43:48 | INFO    | frontend | request | API /api/dashenlin/stats/store_city -> 200 (17ms)
+2026-07-21 23:43:51 | INFO    | frontend | request | API /api/dashenlin/stats/store_city -> 200 (21ms)
+API /api/dashenlin/stats/store_city -> 200 (19ms)
+2026-07-22 00:05:05 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (16ms)
+2026-07-22 00:06:56 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (139ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (105ms)
+2026-07-22 00:06:58 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (143ms)
+ResizeObserver loop completed with undelivered notifications. @ http://127.0.0.1:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (67ms)
+API /api/dashenlin/rows -> 200 (71ms)
+2026-07-22 00:07:11 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (87ms)
+2026-07-22 00:17:40 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (87ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (20ms)

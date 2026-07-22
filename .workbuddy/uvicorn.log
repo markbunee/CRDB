@@ -1,0 +1,23 @@
+INFO:     Started server process [17172]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58082 - "GET /api/dbs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58087 - "GET /api/gaoji/rows?page=1&page_size=2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58089 - "GET /api/gaoji/rows?page=1&page_size=5&search=%E7%BB%B4%E7%94%9F%E7%B4%A0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58105 - "GET /api/dbs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58109 - "GET /api/gaoji/rows?page=1&page_size=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58111 - "POST /api/dashenlin/rows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58113 - "PUT /api/dashenlin/rows/5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58151 - "GET /api/dbs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58155 - "GET /api/dashenlin/rows?page=1&page_size=100&search=%E6%B5%8B%E8%AF%95 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58157 - "DELETE /api/dashenlin/rows/5 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58159 - "GET /api/gaoji/rows?page=1&page_size=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58161 - "POST /api/dashenlin/rows HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58163 - "PUT /api/dashenlin/rows/6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58165 - "GET /api/dashenlin/rows?page=1&page_size=100&search=%E6%B5%8B%E8%AF%95 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58167 - "GET /api/dashenlin/rows?page=1&page_size=10&sort_by=%E6%95%B0%E9%87%8F&sort_dir=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58169 - "DELETE /api/dashenlin/rows/6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58171 - "GET /api/dbs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58189 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58190 - "GET /api/haiwang/export HTTP/1.1" 200 OK
