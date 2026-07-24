@@ -1,5 +1,5 @@
 <template>
-  <div class="dashenlin-page">
+  <div class="haiwang-page">
     <!-- 公司标签 -->
     <div class="company-tabs">
       <div
@@ -14,7 +14,7 @@
       </div>
     </div>
 
-    <!-- 操作栏：按钮 -->
+    <!-- 操作栏 -->
     <div class="toolbar card">
       <div class="actions">
         <el-button type="success" :icon="Upload" @click="openImportDialog">导入Excel</el-button>
@@ -51,10 +51,10 @@
           />
         </div>
         <div class="filter-item">
-          <label>商品编码</label>
+          <label>商品SAP编码</label>
           <el-input
             v-model="productCodes"
-            placeholder="例: 1058746,1086127"
+            placeholder="例: 10002345,10002346"
             clearable
             size="default"
             style="width: 200px"
@@ -63,25 +63,13 @@
           />
         </div>
         <div class="filter-item">
-          <label>城市</label>
+          <label>事业部名称</label>
           <el-input
             v-model="cities"
-            placeholder="例: 广州,深圳"
+            placeholder="例: 海王星辰,海王健康"
             clearable
             size="default"
-            style="width: 160px"
-            @keyup.enter="handleQuery"
-            @clear="handleQuery"
-          />
-        </div>
-        <div class="filter-item">
-          <label>省份</label>
-          <el-input
-            v-model="provinces"
-            placeholder="例: 广东,广西"
-            clearable
-            size="default"
-            style="width: 160px"
+            style="width: 180px"
             @keyup.enter="handleQuery"
             @clear="handleQuery"
           />
@@ -267,7 +255,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, Upload, Download, RefreshRight, UploadFilled, InfoFilled, WarningFilled, DataLine, Setting, Delete, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import DataTable from '@/components/DataTable.vue'
@@ -285,10 +273,9 @@ import {
 import { getCurrentMonthRange } from '@/utils/date'
 import { logger } from '@/utils/logger'
 
-const route = useRoute()
 const router = useRouter()
 
-const dbKey = 'dashenlin'
+const dbKey = 'haiwang'
 const activeDb = ref(dbKey)
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -307,7 +294,6 @@ const { start: defaultStart, end: defaultEnd } = getCurrentMonthRange()
 const dateRange = ref<[string, string]>([defaultStart, defaultEnd])
 const productCodes = ref('')
 const cities = ref('')
-const provinces = ref('')
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
@@ -339,7 +325,7 @@ async function loadDbs() {
     const meta = dbs.value.find((d) => d.key === dbKey)
     if (meta) columns.value = meta.columns
   } catch (e: any) {
-    logger.error('加载库元数据失败: ' + e.message, 'DashenlinView')
+    logger.error('加载库元数据失败: ' + e.message, 'HaiwangView')
   }
 }
 
@@ -357,7 +343,6 @@ async function loadRows() {
       date_to: date_to || undefined,
       product_codes: productCodes.value || undefined,
       cities: cities.value || undefined,
-      provinces: provinces.value || undefined,
     })
     rows.value = res.rows
     total.value = res.total
@@ -379,7 +364,6 @@ function resetFilters() {
   dateRange.value = [defaultStart, defaultEnd]
   productCodes.value = ''
   cities.value = ''
-  provinces.value = ''
   page.value = 1
   loadRows()
 }
@@ -411,7 +395,6 @@ function switchDb(key: string) {
 async function handleExport() {
   exporting.value = true
   try {
-    // 构建查询参数
     const params = new URLSearchParams()
     const date_from = dateRange.value?.[0]
     const date_to = dateRange.value?.[1]
@@ -419,7 +402,6 @@ async function handleExport() {
     if (date_to) params.set('date_to', date_to)
     if (productCodes.value) params.set('product_codes', productCodes.value)
     if (cities.value) params.set('cities', cities.value)
-    if (provinces.value) params.set('provinces', provinces.value)
     if (sortBy.value) params.set('sort_by', sortBy.value)
     if (sortDir.value) params.set('sort_dir', sortDir.value)
 
@@ -433,7 +415,7 @@ async function handleExport() {
     const downloadUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = downloadUrl
-    a.download = `大参林_查询结果.xlsx`
+    a.download = `海王_查询结果.xlsx`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -488,7 +470,6 @@ async function submitImport() {
     }
     uploadRef.value?.clearFiles()
     uploadFiles.value = []
-    // 刷新数据
     page.value = 1
     loadRows()
     loadDbs()
@@ -566,7 +547,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.dashenlin-page {
+.haiwang-page {
   max-width: 1600px;
   margin: 0 auto;
 }
@@ -647,7 +628,6 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-/* 筛选面板 */
 .filter-panel {
   margin-bottom: 16px;
   padding: 14px 20px;
@@ -705,7 +685,6 @@ onMounted(() => {
   width: 70px;
 }
 
-/* 导入弹窗 */
 .import-body {
   display: flex;
   flex-direction: column;

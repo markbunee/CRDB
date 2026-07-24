@@ -264,21 +264,30 @@ def import_excel_copy(conn, db_key: str, replace: bool = True) -> int:
 def create_indexes(conn, db_key: str):
     """为指定库的表创建所有索引（在数据导入后调用）。
 
-    indexes 格式: [(索引名, [列名...]), ...]
-    fts_columns: 需要建 GIN 全文搜索索引的列名列表
+    索引类型：
+      - B-tree: indexes 字段声明的单列/复合索引（精确查询、排序）
+      - BRIN:   brin_columns 字段声明的列（大表日期范围查询，体积仅 B-tree 1/1000）
+      - GIN:    fts_columns 字段声明的列（全文搜索）
+
+    千万级数据优化要点：
+      - BRIN 索引适合物理顺序与逻辑顺序相关的列（如自增 id、日期）
+      - 先导入数据再建索引，比先建索引再导入快
+      - 建完索引后执行 ANALYZE 更新统计信息
     """
     cfg = get_cfg(db_key)
     table = cfg["table"]
     indexes = cfg.get("indexes", [])
     fts_cols = cfg.get("fts_columns", [])
+    brin_cols = cfg.get("brin_columns", [])
 
-    if not indexes and not fts_cols:
+    if not indexes and not fts_cols and not brin_cols:
         return
 
-    print(f"  [info] 为 {table} 创建索引（{len(indexes)} 个 B-tree + {len(fts_cols)} 个 GIN）...")
+    total = len(indexes) + len(fts_cols) + len(brin_cols)
+    print(f"  [info] 为 {table} 创建索引（{len(indexes)} B-tree + {len(brin_cols)} BRIN + {len(fts_cols)} GIN，共 {total} 个）...")
     with conn.cursor() as cur:
+        # B-tree 索引
         for idx_name, idx_cols in indexes:
-            # 列名列表 → ("col1", "col2") 形式，用 Identifier 包裹防注入
             cols_expr = sql.SQL(", ").join(sql.Identifier(c) for c in idx_cols)
             stmt = sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} ({})").format(
                 sql.Identifier(idx_name),
@@ -286,7 +295,19 @@ def create_indexes(conn, db_key: str):
                 cols_expr,
             )
             cur.execute(stmt)
-        # 全文搜索 GIN 索引
+        # BRIN 索引（大表日期列，体积小、范围查询快）
+        for col in brin_cols:
+            idx_name = f"idx_{db_key}_brin_{col}"
+            stmt = sql.SQL(
+                "CREATE INDEX IF NOT EXISTS {} ON {} USING BRIN ({})"
+                " WITH (pages_per_range = 128)"
+            ).format(
+                sql.Identifier(idx_name),
+                sql.Identifier(table),
+                sql.Identifier(col),
+            )
+            cur.execute(stmt)
+        # GIN 全文搜索索引
         for col in fts_cols:
             idx_name = f"idx_{db_key}_fts_{col}"
             stmt = sql.SQL(

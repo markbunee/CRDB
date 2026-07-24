@@ -56,6 +56,11 @@ export interface DbMeta {
   columns: { name: string; type: string }[]
   date_columns: string[]
   row_count: number
+  field_map: Record<string, string>
+  filter_map: Record<string, string>
+  region_levels: string[]
+  region_label: string
+  supports_stats: boolean
 }
 
 export function fetchDbs() {
@@ -96,6 +101,71 @@ export function upsertByDate(
   )
 }
 
+export function clearData(dbKey: string) {
+  return request<{ message: string; db_key: string }>(
+    `/api/${dbKey}/rows/clear`,
+    { confirm: true },
+    'POST',
+  )
+}
+
+export function clearDataByMonthRange(
+  dbKey: string,
+  monthFrom: string,
+  monthTo: string,
+) {
+  return request<{ message: string; db_key: string; deleted: number }>(
+    `/api/${dbKey}/rows/clear`,
+    { month_from: monthFrom, month_to: monthTo },
+    'POST',
+  )
+}
+
+export interface ImportExcelResult {
+  filename: string
+  success: boolean
+  inserted: number
+  deleted: number
+  dates: string[]
+  excel_rows: number
+  overwrite_existing: boolean
+  message: string
+  error?: string | null
+}
+
+export interface ImportExcelBatchResponse {
+  success: boolean
+  total_files: number
+  success_count: number
+  failed_count: number
+  total_inserted: number
+  total_deleted: number
+  overwrite_existing: boolean
+  message: string
+  file_results: ImportExcelResult[]
+}
+
+export function importExcelBatch(
+  dbKey: string,
+  files: File[],
+  overwriteExisting = true,
+): Promise<ImportExcelBatchResponse> {
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  formData.append(
+    'overwrite_existing',
+    overwriteExisting ? 'true' : 'false',
+  )
+  const url = `${API_BASE}/api/${dbKey}/rows/import_excel_batch`
+  return fetch(url, { method: 'POST', body: formData }).then(async (res) => {
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(data.detail || data.message || '批量导入失败')
+    }
+    return data as ImportExcelBatchResponse
+  })
+}
+
 export function fetchClickStats(
   dbKey: string,
   options: {
@@ -109,38 +179,170 @@ export function fetchClickStats(
   return request<ClickStatsResponse>(`/api/${dbKey}/stats/click`, options)
 }
 
-// ---------- 门店数统计 ----------
+// ---------- 门店数统计（通用三维度） ----------
 
-export interface StoreCountRow {
-  city: string
-  counts: Record<string, number>
+export type StoreCountDimension = 'city' | 'product' | 'time'
+export type StoreCountRegion = 'city' | 'province'
+
+export interface StoreCountCellRow {
+  row_key: string
+  cells: Record<string, number>
 }
 
 export interface StoreCountTable {
   title: string
-  product_code: string | null
-  time_columns: string[]
-  cities: string[]
-  rows: StoreCountRow[]
+  split_value: string | null
+  row_header: string
+  col_header: string
+  row_keys: string[]
+  col_keys: string[]
+  rows: StoreCountCellRow[]
 }
 
 export interface StoreCountResponse {
   tables: StoreCountTable[]
+  dimension: StoreCountDimension
+  region_level: StoreCountRegion
   merge_months: boolean
+  merge_cities: boolean
   merge_products: boolean
   total_raw_rows: number
 }
 
-export function fetchStoreCityStats(
+export function fetchStoreCount(
   dbKey: string,
   options: {
+    dimension?: StoreCountDimension
+    region_level?: StoreCountRegion
     date_from?: string
     date_to?: string
     merge_months?: boolean
     cities?: string
-    product_codes?: string
+    provinces?: string
+    products?: string
+    merge_cities?: boolean
     merge_products?: boolean
   } = {},
 ) {
-  return request<StoreCountResponse>(`/api/${dbKey}/stats/store_city`, options)
+  return request<StoreCountResponse>(`/api/${dbKey}/stats/store_count`, options)
+}
+
+// ---------- 实销盒数统计（通用三维度） ----------
+
+export interface BoxCountCellRow {
+  row_key: string
+  cells: Record<string, number>
+  total?: number
+  yoy_total?: number
+  yoy_pct?: number | null
+  mom_total?: number
+  mom_pct?: number | null
+}
+
+export interface BoxCountTable {
+  title: string
+  split_value: string | null
+  row_header: string
+  col_header: string
+  row_keys: string[]
+  col_keys: string[]
+  rows: BoxCountCellRow[]
+}
+
+export interface BoxCountResponse {
+  tables: BoxCountTable[]
+  dimension: StoreCountDimension
+  region_level: StoreCountRegion
+  merge_months: boolean
+  merge_cities: boolean
+  merge_products: boolean
+  total_raw_rows: number
+  calc_yoy_mom?: boolean
+  yoy_range?: { date_from: string; date_to: string }
+  mom_range?: { date_from: string; date_to: string }
+}
+
+export function fetchBoxCount(
+  dbKey: string,
+  options: {
+    dimension?: StoreCountDimension
+    region_level?: StoreCountRegion
+    date_from?: string
+    date_to?: string
+    merge_months?: boolean
+    cities?: string
+    provinces?: string
+    products?: string
+    merge_cities?: boolean
+    merge_products?: boolean
+    calc_yoy_mom?: boolean
+  } = {},
+) {
+  return request<BoxCountResponse>(`/api/${dbKey}/stats/box_count`, options)
+}
+
+// ---------- 统计结果导出（xlsx） ----------
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+async function _fetchBlob(path: string, params?: Record<string, any>): Promise<Blob> {
+  const url = new URL(API_BASE + path, window.location.origin)
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v))
+    })
+  }
+  const res = await fetch(url.toString())
+  if (!res.ok) {
+    const text = await res.text().catch(() => '导出失败')
+    logger.warn(`API ${res.status} ${path}: ${text}`, 'request')
+    throw new Error(text)
+  }
+  return res.blob()
+}
+
+export function exportStoreCount(
+  dbKey: string,
+  options: {
+    dimension?: StoreCountDimension
+    region_level?: StoreCountRegion
+    date_from?: string
+    date_to?: string
+    merge_months?: boolean
+    cities?: string
+    provinces?: string
+    products?: string
+    merge_cities?: boolean
+    merge_products?: boolean
+  } = {},
+) {
+  return _fetchBlob(`/api/${dbKey}/stats/store_count/export`, options)
+}
+
+export function exportBoxCount(
+  dbKey: string,
+  options: {
+    dimension?: StoreCountDimension
+    region_level?: StoreCountRegion
+    date_from?: string
+    date_to?: string
+    merge_months?: boolean
+    cities?: string
+    provinces?: string
+    products?: string
+    merge_cities?: boolean
+    merge_products?: boolean
+    calc_yoy_mom?: boolean
+  } = {},
+) {
+  return _fetchBlob(`/api/${dbKey}/stats/box_count/export`, options)
 }

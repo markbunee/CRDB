@@ -18,6 +18,7 @@ from psycopg2.extras import RealDictCursor
 from ..database import get_conn
 from ..models.schema_def import (
     get_cfg, col_names, search_columns, numeric_columns, date_columns,
+    get_field_map,
 )
 from ..utils.serialization import jsonable_rows
 
@@ -343,6 +344,33 @@ def delete_rows_by_date(db_key: str, date_value: str) -> int:
     with get_conn(db_key, readonly=False) as conn:
         with conn.cursor() as cur:
             cur.execute(stmt, (date_value,))
+            affected = cur.rowcount
+    return affected
+
+
+def delete_rows_by_month_range(db_key: str, month_from: str, month_to: str) -> int:
+    """按月度列删除指定月份范围的数据，返回被删除行数。
+
+    使用 schema_def 中的 month_col 匹配（大参林=月度，海王=月度）。
+    月份参数格式建议为 YYYY-MM-DD（月度列通常存每月首日）。
+    """
+    cfg = get_cfg(db_key)
+    fm = get_field_map(db_key)
+    month_col = fm.get("month_col")
+    if not month_col:
+        # 兼容没有 field_map 的库：使用第一个日期列（退化为按日期范围删）
+        date_cols = date_columns(db_key)
+        if not date_cols:
+            raise ValueError(f"库 {db_key} 没有月度/日期列，无法按月份范围删除")
+        month_col = date_cols[0]
+
+    stmt = sql.SQL("DELETE FROM {} WHERE {} BETWEEN %s AND %s").format(
+        sql.Identifier(cfg["table"]),
+        sql.Identifier(month_col),
+    )
+    with get_conn(db_key, readonly=False) as conn:
+        with conn.cursor() as cur:
+            cur.execute(stmt, (month_from, month_to))
             affected = cur.rowcount
     return affected
 

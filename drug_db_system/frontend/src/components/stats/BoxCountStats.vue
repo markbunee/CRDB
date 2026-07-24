@@ -36,6 +36,9 @@
             <el-checkbox v-model="mergeMonths" class="merge-checkbox">
               {{ mergeMonthsLabel }}
             </el-checkbox>
+            <el-checkbox v-model="calcYoyMom" class="merge-checkbox yoy-checkbox">
+              求同比环比
+            </el-checkbox>
           </div>
         </div>
 
@@ -111,10 +114,25 @@
         </div>
       </div>
 
-      <!-- 提示信息 -->
       <div class="hint-bar">
         <el-icon><InfoFilled /></el-icon>
         <span>{{ hintText }}</span>
+      </div>
+
+      <!-- 同比环比说明条 -->
+      <div v-if="calcYoyMom && yoyRange" class="yoy-mom-info">
+        <div class="yoy-mom-item">
+          <span class="yoy-label">当前期</span>
+          <span class="yoy-value">{{ dateRange?.[0] }} ~ {{ dateRange?.[1] }}</span>
+        </div>
+        <div class="yoy-mom-item">
+          <span class="yoy-label yoy-color">同比期</span>
+          <span class="yoy-value">{{ yoyRange.date_from }} ~ {{ yoyRange.date_to }}</span>
+        </div>
+        <div class="yoy-mom-item">
+          <span class="yoy-label mom-color">环比期</span>
+          <span class="yoy-value">{{ momRange!.date_from }} ~ {{ momRange!.date_to }}</span>
+        </div>
       </div>
     </div>
 
@@ -148,6 +166,13 @@
                     >
                       {{ c }}
                     </th>
+                    <template v-if="calcYoyMom">
+                      <th class="total-header">合计(盒)</th>
+                      <th class="yoy-header">同期合计(盒)</th>
+                      <th class="yoy-header">同比(%)</th>
+                      <th class="mom-header">上月合计(盒)</th>
+                      <th class="mom-header">环比(%)</th>
+                    </template>
                   </tr>
                 </thead>
                 <tbody>
@@ -161,6 +186,13 @@
                     >
                       {{ row.cells[c] ?? 0 }}
                     </td>
+                    <template v-if="calcYoyMom">
+                      <td class="total-cell">{{ row.total ?? 0 }}</td>
+                      <td class="total-cell">{{ row.yoy_total ?? 0 }}</td>
+                      <td class="pct-cell" :class="pctClass(row.yoy_pct)">{{ fmtPct(row.yoy_pct) }}</td>
+                      <td class="total-cell">{{ row.mom_total ?? 0 }}</td>
+                      <td class="pct-cell" :class="pctClass(row.mom_pct)">{{ fmtPct(row.mom_pct) }}</td>
+                    </template>
                   </tr>
                 </tbody>
               </table>
@@ -169,8 +201,8 @@
         </div>
       </template>
       <div v-else-if="!loading" class="empty-state">
-        <el-icon class="empty-icon"><DataAnalysis /></el-icon>
-        <p>点击「统计」按钮查看门店数统计结果</p>
+        <el-icon class="empty-icon"><Box /></el-icon>
+        <p>点击「统计」按钮查看实销盒数统计结果</p>
       </div>
     </div>
   </div>
@@ -183,17 +215,17 @@ import {
   Search,
   RefreshRight,
   InfoFilled,
-  DataAnalysis,
+  Box,
   Location,
   Goods,
   Calendar,
   Download,
 } from '@element-plus/icons-vue'
 import {
-  fetchStoreCount,
-  exportStoreCount,
+  fetchBoxCount,
+  exportBoxCount,
   downloadBlob,
-  type StoreCountTable,
+  type BoxCountTable,
   type StoreCountDimension,
   type StoreCountRegion,
   type DbMeta,
@@ -214,7 +246,6 @@ const dimensions = [
   { key: 'time' as StoreCountDimension, name: '时间维度', desc: '按月份拆分 · 地域×品类', icon: Calendar },
 ]
 
-// 筛选字段
 const dimension = ref<StoreCountDimension>('city')
 const regionLevel = ref<StoreCountRegion>('city')
 const dateRange = ref<[string, string]>([defaultStart, defaultEnd])
@@ -225,10 +256,12 @@ const products = ref('')
 const mergeCities = ref(false)
 const mergeProducts = ref(false)
 
-// 结果
-const tables = ref<StoreCountTable[]>([])
+const tables = ref<BoxCountTable[]>([])
 const loading = ref(false)
 const exporting = ref(false)
+const calcYoyMom = ref(false)
+const yoyRange = ref<{ date_from: string; date_to: string } | null>(null)
+const momRange = ref<{ date_from: string; date_to: string } | null>(null)
 
 const regionLabel = computed(() =>
   regionLevel.value === 'province' && hasProvince.value ? '省份' : (dbConfig.value?.region_label || '城市'),
@@ -297,7 +330,7 @@ function onRegionChange() {
 async function handleQuery() {
   loading.value = true
   try {
-    const res = await fetchStoreCount(props.dbKey, {
+    const res = await fetchBoxCount(props.dbKey, {
       dimension: dimension.value,
       region_level: regionLevel.value,
       date_from: dateRange.value?.[0] || undefined,
@@ -308,14 +341,17 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      calc_yoy_mom: calcYoyMom.value,
     })
     tables.value = res.tables
+    yoyRange.value = res.yoy_range || null
+    momRange.value = res.mom_range || null
     if (res.tables.length === 0) {
       ElMessage.info('查询结果为空，请调整筛选条件')
     }
   } catch (e: any) {
     ElMessage.error('统计失败: ' + e.message)
-    logger.error('门店数统计失败: ' + e.message, 'StoreCityStats')
+    logger.error('实销盒数统计失败: ' + e.message, 'BoxCountStats')
   } finally {
     loading.value = false
   }
@@ -331,6 +367,9 @@ function handleReset() {
   products.value = ''
   mergeCities.value = false
   mergeProducts.value = false
+  calcYoyMom.value = false
+  yoyRange.value = null
+  momRange.value = null
   tables.value = []
 }
 
@@ -341,7 +380,7 @@ async function handleExport() {
   }
   exporting.value = true
   try {
-    const blob = await exportStoreCount(props.dbKey, {
+    const blob = await exportBoxCount(props.dbKey, {
       dimension: dimension.value,
       region_level: regionLevel.value,
       date_from: dateRange.value?.[0] || undefined,
@@ -352,13 +391,15 @@ async function handleExport() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      calc_yoy_mom: calcYoyMom.value,
     })
-    const filename = `store_count_${dimension.value}_${regionLevel.value}.xlsx`
+    const suffix = calcYoyMom.value ? '_yoy_mom' : ''
+    const filename = `box_count_${dimension.value}_${regionLevel.value}${suffix}.xlsx`
     downloadBlob(blob, filename)
     ElMessage.success('导出完成')
   } catch (e: any) {
     ElMessage.error('导出失败: ' + e.message)
-    logger.error('门店数导出失败: ' + e.message, 'StoreCityStats')
+    logger.error('盒数导出失败: ' + e.message, 'BoxCountStats')
   } finally {
     exporting.value = false
   }
@@ -366,9 +407,22 @@ async function handleExport() {
 
 function countClass(val: number | undefined): string {
   if (!val || val === 0) return 'count-zero'
-  if (val < 10) return 'count-low'
-  if (val < 50) return 'count-mid'
+  if (val < 100) return 'count-low'
+  if (val < 1000) return 'count-mid'
   return 'count-high'
+}
+
+function fmtPct(val: number | null | undefined): string {
+  if (val === null || val === undefined) return '—'
+  const sign = val > 0 ? '+' : ''
+  return sign + val.toFixed(2) + '%'
+}
+
+function pctClass(val: number | null | undefined): string {
+  if (val === null || val === undefined) return 'pct-na'
+  if (val > 0) return 'pct-up'
+  if (val < 0) return 'pct-down'
+  return 'pct-flat'
 }
 </script>
 
@@ -653,5 +707,104 @@ function countClass(val: number | undefined): string {
 
 .empty-state p {
   font-size: 14px;
+}
+
+/* ---------- 同比环比 ---------- */
+.yoy-checkbox {
+  color: #e6a23c;
+  font-weight: 600;
+}
+
+.yoy-checkbox :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+  background-color: #e6a23c;
+  border-color: #e6a23c;
+}
+
+.yoy-checkbox :deep(.el-checkbox__input.is-checked + .el-checkbox__label) {
+  color: #e6a23c;
+}
+
+.yoy-mom-info {
+  display: flex;
+  gap: 20px;
+  margin-top: 10px;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, #fdf6ec 0%, #f0f9ff 50%, #fef0f0 100%);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.yoy-mom-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.yoy-label {
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #3b6bd6;
+  color: #fff;
+}
+
+.yoy-label.yoy-color {
+  background: #e6a23c;
+}
+
+.yoy-label.mom-color {
+  background: #f56c6c;
+}
+
+.yoy-value {
+  color: #606266;
+  font-variant-numeric: tabular-nums;
+}
+
+.total-header {
+  background: #ecf5ff !important;
+  color: #3b6bd6 !important;
+  border-left: 2px solid #d0e3ff;
+}
+
+.yoy-header {
+  background: #fdf6ec !important;
+  color: #e6a23c !important;
+  border-left: 1px solid #faecd8;
+}
+
+.mom-header {
+  background: #fef0f0 !important;
+  color: #f56c6c !important;
+  border-left: 1px solid #fde2e2;
+}
+
+.total-cell {
+  font-weight: 600;
+  color: #3b6bd6;
+  background: #f8fbff;
+  font-variant-numeric: tabular-nums;
+}
+
+.pct-cell {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pct-up {
+  color: #f56c6c;
+}
+
+.pct-down {
+  color: #67c23a;
+}
+
+.pct-flat {
+  color: #909399;
+}
+
+.pct-na {
+  color: #c0c4cc;
 }
 </style>

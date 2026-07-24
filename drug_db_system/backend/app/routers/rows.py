@@ -2,13 +2,16 @@
 """数据行 CRUD 接口：/api/{db_key}/rows。"""
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
+from psycopg2 import sql
 
+from ..database import get_conn
 from ..dependencies import validate_db_key
 from ..logger import get_logger
+from ..models.schema_def import get_cfg, get_filter_map
 from ..services.query_builder import (
     query_rows, get_row_by_id, create_row, update_row, delete_row,
-    delete_rows_by_date,
+    delete_rows_by_date, delete_rows_by_month_range,
 )
 
 router = APIRouter(prefix="/api/{db_key}", tags=["rows"])
@@ -38,14 +41,13 @@ def list_rows(
     - product_codes / cities / provinces：支持英文逗号分隔多选，留空表示全选
     """
     filters = {}
-    # 大参林表字段名映射；其他库可在此扩展
-    if db_key == "dashenlin":
-        if product_codes:
-            filters["商品编码"] = product_codes
-        if cities:
-            filters["城市"] = cities
-        if provinces:
-            filters["省份"] = provinces
+    filter_map = get_filter_map(db_key)
+    if product_codes and "product_codes" in filter_map:
+        filters[filter_map["product_codes"]] = product_codes
+    if cities and "cities" in filter_map:
+        filters[filter_map["cities"]] = cities
+    if provinces and "provinces" in filter_map:
+        filters[filter_map["provinces"]] = provinces
 
     try:
         result = query_rows(
@@ -153,3 +155,60 @@ def upsert_by_date(
     except Exception as e:
         logger.error("覆盖新增 %s 失败: %s", db_key, e)
         raise HTTPException(500, f"覆盖新增失败: {e}")
+
+
+@router.post("/rows/clear")
+def clear_all_rows(
+    db_key: str = validate_db_key,
+    month_from: Optional[str] = Body(None, embed=True, description="月份范围起 YYYY-MM-DD（月度列通常存每月首日）"),
+    month_to: Optional[str] = Body(None, embed=True, description="月份范围止 YYYY-MM-DD"),
+    confirm: bool = Body(False, embed=True, description="全部清空必须传 confirm=true 才会执行"),
+):
+    """清空数据：支持按月份范围删除，或确认后清空全部。
+
+    - 传 month_from / month_to：按月度列删除该月份范围的数据
+    - 不传月份范围且 confirm=true：TRUNCATE 清空全部（破坏性操作，谨慎使用）
+    """
+    cfg = get_cfg(db_key)
+    table = cfg["table"]
+
+    if month_from and month_to:
+        try:
+            deleted = delete_rows_by_month_range(db_key, month_from, month_to)
+            logger.warning(
+                "按月份范围删除 %s 表 %s: %s ~ %s, 删除 %d 条",
+                db_key, table, month_from, month_to, deleted,
+            )
+            return {
+                "message": f"已删除 {month_from} 至 {month_to} 共 {deleted} 条数据",
+                "db_key": db_key,
+                "month_from": month_from,
+                "month_to": month_to,
+                "deleted": deleted,
+            }
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            logger.error("按月份范围删除 %s 失败: %s", db_key, e)
+            raise HTTPException(500, f"删除失败: {e}")
+
+    if not confirm:
+        raise HTTPException(
+            400,
+            "请提供 month_from/month_to 进行月份范围删除，或传 confirm=true 执行全部清空",
+        )
+
+    try:
+        with get_conn(db_key, readonly=False) as conn:
+            with conn.cursor() as cur:
+                # 使用 TRUNCATE 快速清空并重置自增 ID
+                cur.execute(
+                    sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY").format(
+                        sql.Identifier(table)
+                    )
+                )
+        logger.warning("清空数据库 %s 的表 %s 完成", db_key, table)
+        return {"message": f"已清空数据库 {db_key} 的全部数据", "db_key": db_key}
+    except Exception as e:
+        logger.error("清空数据库 %s 失败: %s", db_key, e)
+        raise HTTPException(500, f"清空失败: {e}")

@@ -34,6 +34,14 @@
           v-if="activeFunc === 'store_city'"
           :db-key="dbKey"
         />
+        <BoxCountStats
+          v-else-if="activeFunc === 'box_count'"
+          :db-key="dbKey"
+        />
+        <SalesTrendStats
+          v-else-if="activeFunc === 'trend'"
+          :db-key="dbKey"
+        />
       </section>
     </div>
   </el-drawer>
@@ -41,8 +49,10 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Shop, TrendCharts } from '@element-plus/icons-vue'
+import { Shop, TrendCharts, Box } from '@element-plus/icons-vue'
 import StoreCityStats from './stats/StoreCityStats.vue'
+import BoxCountStats from './stats/BoxCountStats.vue'
+import SalesTrendStats from './stats/SalesTrendStats.vue'
 
 const props = defineProps<{
   modelValue: boolean
@@ -66,9 +76,15 @@ const menuItems = [
     icon: Shop,
   },
   {
-    key: 'placeholder_trend',
+    key: 'box_count',
+    name: '实销盒数统计',
+    desc: '城市维度 · 月度/区间 · SUM(数量)',
+    icon: Box,
+  },
+  {
+    key: 'trend',
     name: '销售趋势分析',
-    desc: '敬请期待',
+    desc: '折线图 · 柱状图 · 可视化',
     icon: TrendCharts,
   },
 ]

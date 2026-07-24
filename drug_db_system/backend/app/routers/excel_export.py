@@ -11,7 +11,7 @@ from openpyxl.utils import get_column_letter
 
 from ..dependencies import validate_db_key
 from ..logger import get_logger
-from ..models.schema_def import get_cfg, col_names
+from ..models.schema_def import get_cfg, col_names, get_filter_map
 from ..services.query_builder import (
     query_rows, build_search_conditions, build_filter_conditions,
     build_date_range_condition, _assemble_where,
@@ -107,13 +107,13 @@ def export_excel(
     """
     cfg = get_cfg(db_key)
     filters = {}
-    if db_key == "dashenlin":
-        if product_codes:
-            filters["商品编码"] = product_codes
-        if cities:
-            filters["城市"] = cities
-        if provinces:
-            filters["省份"] = provinces
+    filter_map = get_filter_map(db_key)
+    if product_codes and "product_codes" in filter_map:
+        filters[filter_map["product_codes"]] = product_codes
+    if cities and "cities" in filter_map:
+        filters[filter_map["cities"]] = cities
+    if provinces and "provinces" in filter_map:
+        filters[filter_map["provinces"]] = provinces
 
     stmt, params, all_cols = _build_export_query(
         db_key, search, date_from, date_to, filters, sort_by, sort_dir,

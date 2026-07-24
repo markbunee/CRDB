@@ -1,19 +1,18 @@
 # -*- coding: utf-8 -*-
-"""门店数统计接口：/api/{db_key}/stats/store_count(+ /export)
+"""实销盒数统计接口：/api/{db_key}/stats/box_count(+ /export)
 
-按维度统计实销门店数（DISTINCT 门店编码 非重复计数）。
+逻辑完全复用门店数统计（stats_store.py），仅把聚合指标从
+  COUNT(DISTINCT 门店编码)
+改为
+  SUM(数量)
+维度/地域级别/合并开关/导出与门店数统计保持一致。
 
-统一为「拆分维度(多表) + 行维度 + 列维度」模型，支持三种维度：
-  - dimension=city    地域维度：拆分=地域(可合并)，行=品类(商品编码)，列=月份(可合并)
-  - dimension=product 品类维度：拆分=品类(可合并)，行=地域，列=月份(可合并)
-  - dimension=time    时间维度：拆分=月份(可合并)，行=地域，列=品类
-
-地域级别 region_level 可在城市(city)/省份(province)间二选一切换（城市与省份互斥）。
-
-导出：GET /stats/store_count/export 返回 xlsx（每个 table 一个 sheet），英文文件名。
+导出：GET /stats/box_count/export 返回 xlsx（每个 table 一个 sheet），英文文件名。
 """
+import calendar
 import io
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -29,8 +28,8 @@ from ..models.schema_def import get_cfg, get_field_map, get_region_levels, get_r
 from ..database import get_conn
 from ..logger import get_logger
 
-router = APIRouter(prefix="/api/{db_key}", tags=["stats-store"])
-logger = get_logger("app.routers.stats_store")
+router = APIRouter(prefix="/api/{db_key}", tags=["stats-box"])
+logger = get_logger("app.routers.stats_box")
 
 DIMENSIONS = ("city", "product", "time")
 
@@ -69,8 +68,10 @@ def _val_to_str(val: Any) -> str:
 
 
 def _fmt_val(fm: Dict[str, str], col_name: Optional[str], val: Any) -> Optional[str]:
-    if col_name is None or val is None:
+    if col_name is None:
         return None
+    if val is None:
+        return "未知"
     if col_name == fm["month_col"]:
         return _fmt_month(val)
     return _val_to_str(val)
@@ -153,7 +154,7 @@ def _make_title(
     return f"{split_name}: {split_label}"
 
 
-def _run_store_count(
+def _run_box_count(
     db_key: str,
     dimension: str,
     region_level: str,
@@ -166,7 +167,7 @@ def _run_store_count(
     merge_cities: bool,
     merge_products: bool,
 ) -> dict:
-    """门店数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。"""
+    """盒数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。"""
     fm = get_field_map(db_key)
     if not fm:
         raise HTTPException(400, f"该统计功能暂不支持数据库: {db_key}")
@@ -241,8 +242,8 @@ def _run_store_count(
     where, params = _build_where(fm, date_from, date_to, product_list, region_col, region_list)
 
     fields = list(group_cols) + [
-        sql.SQL("COUNT(DISTINCT {}) AS store_count").format(
-            sql.Identifier(fm["store_col"])
+        sql.SQL("COALESCE(SUM({}), 0) AS box_count").format(
+            sql.Identifier(fm["qty_col"])
         )
     ]
     if group_cols:
@@ -271,7 +272,7 @@ def _run_store_count(
                 colnames = [d[0] for d in cur.description]
                 raw_rows = [dict(zip(colnames, r)) for r in cur.fetchall()]
     except Exception as e:
-        logger.error("门店数统计 %s 失败: %s", db_key, e)
+        logger.error("盒数统计 %s 失败: %s", db_key, e)
         raise HTTPException(500, f"统计失败: {e}")
 
     tables = _pivot(
@@ -282,7 +283,7 @@ def _run_store_count(
     )
 
     logger.info(
-        "门店数统计 %s dim=%s region=%s date=[%s,%s] merge_months=%s regions=%s products=%s "
+        "盒数统计 %s dim=%s region=%s date=[%s,%s] merge_months=%s regions=%s products=%s "
         "merge_cities=%s merge_products=%s -> %d 表, %d 原始行",
         db_key, dimension, region_level, date_from or "-", date_to or "-",
         merge_months, cities or "-" if region_level == "city" else provinces or "-",
@@ -298,6 +299,168 @@ def _run_store_count(
         "merge_products": merge_products,
         "total_raw_rows": len(raw_rows),
     }
+
+
+# ---------- 同比环比 ----------
+
+def _shift_year(date_str: str) -> str:
+    """将日期字符串平移一年（去年同期）。"""
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    try:
+        return d.replace(year=d.year - 1).strftime("%Y-%m-%d")
+    except ValueError:  # 2/29 -> 2/28
+        return d.replace(year=d.year - 1, day=28).strftime("%Y-%m-%d")
+
+
+def _shift_n_months(date_str: str, n: int) -> str:
+    """将日期字符串平移 N 个月（正数往后，负数往前）。"""
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    total_months = d.year * 12 + d.month - 1 + n
+    new_year = total_months // 12
+    new_month = total_months % 12 + 1
+    last_day = calendar.monthrange(new_year, new_month)[1]
+    new_day = min(d.day, last_day)
+    return f"{new_year}-{new_month:02d}-{new_day:02d}"
+
+
+def _month_count(date_from: str, date_to: str) -> int:
+    """计算日期区间跨越的月份数（含首尾，至少 1 个月）。"""
+    d1 = datetime.strptime(date_from, "%Y-%m-%d")
+    d2 = datetime.strptime(date_to, "%Y-%m-%d")
+    months = (d2.year - d1.year) * 12 + (d2.month - d1.month)
+    return max(1, months + 1)
+
+
+def _shift_month_label(month_label: str, months: int) -> str:
+    """将 YYYY-MM 月份标签平移 N 个月（正数往后，负数往前）。"""
+    try:
+        y, m = month_label.split("-")
+        y, m = int(y), int(m)
+        step = 1 if months > 0 else -1
+        for _ in range(abs(months)):
+            m += step
+            if m > 12:
+                m = 1
+                y += 1
+            elif m < 1:
+                m = 12
+                y -= 1
+        return f"{y}-{m:02d}"
+    except Exception:
+        return month_label
+
+
+def _row_total(cells: Dict[str, Any]) -> int:
+    """计算一行所有列的合计。"""
+    return sum(v for v in cells.values() if isinstance(v, (int, float)))
+
+
+def _calc_pct(curr: float, prev: float) -> Optional[float]:
+    """计算同比/环比百分比，基期为 0 时返回 None。"""
+    if prev is None or prev == 0:
+        return None
+    return round((curr - prev) / prev * 100, 2)
+
+
+def _compute_yoy_mom(
+    db_key: str,
+    dimension: str,
+    region_level: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    merge_months: bool,
+    cities: Optional[str],
+    provinces: Optional[str],
+    products: Optional[str],
+    merge_cities: bool,
+    merge_products: bool,
+) -> dict:
+    """计算当前期 + 同比(去年同期) + 环比(上个月)，合并到结果中。"""
+    if not date_from or not date_to:
+        raise HTTPException(400, "同比环比计算需要同时指定开始日期和结束日期")
+
+    month_span = _month_count(date_from, date_to)
+    yoy_from, yoy_to = _shift_year(date_from), _shift_year(date_to)
+
+    is_time_unmerged = (dimension == "time" and not merge_months)
+    if is_time_unmerged:
+        # time 维度·未合并月：逐月比较，取上个月为环比
+        mom_from, mom_to = _shift_n_months(date_from, 1), _shift_n_months(date_to, 1)
+    else:
+        # 其他维度 or 合并月：整段区间比较，取前 N 个月为环比（N = 区间月数）
+        mom_from, mom_to = _shift_n_months(date_from, -month_span), _shift_n_months(date_to, -month_span)
+
+    curr = _run_box_count(
+        db_key, dimension, region_level, date_from, date_to, merge_months,
+        cities, provinces, products, merge_cities, merge_products,
+    )
+    yoy = _run_box_count(
+        db_key, dimension, region_level, yoy_from, yoy_to, merge_months,
+        cities, provinces, products, merge_cities, merge_products,
+    )
+    mom = _run_box_count(
+        db_key, dimension, region_level, mom_from, mom_to, merge_months,
+        cities, provinces, products, merge_cities, merge_products,
+    )
+
+    # 构建查找索引: split_value -> row_key -> total
+    # 时间维度下 split_value 是月份，需要把同期/上月结果平移到当前期月份才能匹配
+    def _index_totals(
+        result: dict, shift_months: int = 0, single_key: Optional[str] = None
+    ) -> Dict[Optional[str], Dict[str, int]]:
+        idx: Dict[Optional[str], Dict[str, int]] = {}
+        tables = result.get("tables", [])
+        if single_key and len(tables) == 1:
+            # 合并月模式下，每个结果只有一张表，直接用固定 key 匹配
+            row_map: Dict[str, int] = {}
+            for row in tables[0].get("rows", []):
+                row_map[row.get("row_key", "")] = _row_total(row.get("cells", {}))
+            idx[single_key] = row_map
+            return idx
+        for t in tables:
+            sv = t.get("split_value")
+            if shift_months and sv:
+                sv = _shift_month_label(sv, shift_months)
+            row_map = {}
+            for row in t.get("rows", []):
+                row_map[row.get("row_key", "")] = _row_total(row.get("cells", {}))
+            idx[sv] = row_map
+        return idx
+
+    # 时间维度·未合并月时按月份平移匹配（逐月比较）；合并月或非时间维按单表匹配（整段区间比较）
+    is_time_merge = dimension == "time" and merge_months
+    single_key = "__merged__" if is_time_merge else None
+    yoy_shift = 12 if is_time_unmerged else 0
+    mom_shift = 1 if is_time_unmerged else 0
+
+    yoy_idx = _index_totals(yoy, yoy_shift, single_key)
+    mom_idx = _index_totals(mom, mom_shift, single_key)
+
+    # 合并到当前期结果
+    for t in curr["tables"]:
+        sv = t.get("split_value")
+        lookup_key = single_key if is_time_merge else sv
+        yoy_rows = yoy_idx.get(lookup_key, {})
+        mom_rows = mom_idx.get(lookup_key, {})
+        for row in t.get("rows", []):
+            rk = row.get("row_key", "")
+            curr_total = _row_total(row.get("cells", {}))
+            yoy_total = yoy_rows.get(rk, 0)
+            mom_total = mom_rows.get(rk, 0)
+            row["total"] = curr_total
+            row["yoy_total"] = yoy_total
+            row["yoy_pct"] = _calc_pct(curr_total, yoy_total)
+            row["mom_total"] = mom_total
+            row["mom_pct"] = _calc_pct(curr_total, mom_total)
+
+    methodology = "逐月比较" if is_time_unmerged else "整段区间比较"
+    curr["calc_yoy_mom"] = True
+    curr["yoy_range"] = {"date_from": yoy_from, "date_to": yoy_to}
+    curr["mom_range"] = {"date_from": mom_from, "date_to": mom_to}
+    curr["口径说明"] = (
+        f"同比({yoy_from}~{yoy_to})、环比({mom_from}~{mom_to})·{methodology}"
+    )
+    return curr
 
 
 def _pivot(
@@ -332,19 +495,19 @@ def _pivot(
         if split_col and not merge_split:
             v = r.get(split_col)
             k = _val_to_str(v)
-            if k and k not in split_seen:
+            if k not in split_seen:
                 split_seen.add(k)
                 split_raw.append(v)
         if row_col and not merge_row:
             v = r.get(row_col)
             k = _val_to_str(v)
-            if k and k not in row_seen:
+            if k not in row_seen:
                 row_seen.add(k)
                 row_raw.append(v)
         if col_col and not merge_col:
             v = r.get(col_col)
             k = _val_to_str(v)
-            if k and k not in col_seen:
+            if k not in col_seen:
                 col_seen.add(k)
                 col_raw.append(v)
 
@@ -370,7 +533,7 @@ def _pivot(
 
     index: Dict[tuple, int] = {}
     for r in raw_rows:
-        count = r.get("store_count", 0)
+        count = r.get("box_count", 0)
         if merge_split:
             sl: Optional[str] = None
         else:
@@ -414,7 +577,6 @@ def _pivot(
 # ---------- Excel 导出 ----------
 
 def _safe_sheet_name(title: str, idx: int) -> str:
-    """生成合法 Excel sheet 名（去非法字符、截断 31 字符）。"""
     name = re.sub(r'[:\\/\?\*\[\]]', "_", str(title)).strip()
     if not name:
         name = f"sheet{idx + 1}"
@@ -423,10 +585,9 @@ def _safe_sheet_name(title: str, idx: int) -> str:
     return name
 
 
-def _tables_to_xlsx(tables: List[dict]) -> io.BytesIO:
-    """把多张透视表写入一个 xlsx（每个 table 一个 sheet）。"""
+def _tables_to_xlsx(tables: List[dict], calc_yoy_mom: bool = False) -> io.BytesIO:
     wb = Workbook()
-    wb.remove(wb.active)  # 删除默认 sheet
+    wb.remove(wb.active)
 
     for i, t in enumerate(tables):
         ws = wb.create_sheet(title=_safe_sheet_name(t.get("title") or f"sheet{i+1}", i))
@@ -434,8 +595,9 @@ def _tables_to_xlsx(tables: List[dict]) -> io.BytesIO:
         row_keys = list(t.get("row_keys", []))
         rows = t.get("rows", [])
 
-        # 表头：行表头 + 各列
         header = [t.get("row_header", "")] + col_keys
+        if calc_yoy_mom:
+            header += ["合计", "同期合计", "同比(%)", "上月合计", "环比(%)"]
         ws.append(header)
         for c in range(1, len(header) + 1):
             cell = ws.cell(row=1, column=c)
@@ -445,23 +607,31 @@ def _tables_to_xlsx(tables: List[dict]) -> io.BytesIO:
             cell.border = THIN_BORDER
         ws.freeze_panes = "A2"
 
-        # 数据行
         for row in rows:
             line = [row.get("row_key", "")]
             cells = row.get("cells", {})
             for ck in col_keys:
                 v = cells.get(ck, 0)
                 line.append(v if v is not None else 0)
+            if calc_yoy_mom:
+                line.append(row.get("total", 0))
+                line.append(row.get("yoy_total", 0))
+                yoy_pct = row.get("yoy_pct")
+                line.append(yoy_pct if yoy_pct is not None else "—")
+                line.append(row.get("mom_total", 0))
+                mom_pct = row.get("mom_pct")
+                line.append(mom_pct if mom_pct is not None else "—")
             ws.append(line)
-            # 普通单元格字体
             r = ws.max_row
             for c in range(1, len(line) + 1):
                 ws.cell(row=r, column=c).font = CELL_FONT
 
-        # 列宽
         ws.column_dimensions["A"].width = 18
         for j in range(len(col_keys)):
             ws.column_dimensions[get_column_letter(j + 2)].width = 16
+        if calc_yoy_mom:
+            for j in range(5):
+                ws.column_dimensions[get_column_letter(len(col_keys) + 2 + j)].width = 14
 
     if not wb.worksheets:
         ws = wb.create_sheet(title="empty")
@@ -473,29 +643,8 @@ def _tables_to_xlsx(tables: List[dict]) -> io.BytesIO:
     return buf
 
 
-@router.get("/stats/store_count")
-def store_count(
-    db_key: str = validate_db_key,
-    dimension: str = Query("city", description="统计维度: city | product | time"),
-    region_level: str = Query("city", description="地域级别: city | province"),
-    date_from: Optional[str] = Query(None, description="日期起 YYYY-MM-DD"),
-    date_to: Optional[str] = Query(None, description="日期止 YYYY-MM-DD"),
-    merge_months: bool = Query(False, description="合并月范围"),
-    cities: Optional[str] = Query(None, description="城市，英文逗号分隔（region_level=city 时生效）"),
-    provinces: Optional[str] = Query(None, description="省份，英文逗号分隔（region_level=province 时生效）"),
-    products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔"),
-    merge_cities: bool = Query(False, description="合并地域维度为单表"),
-    merge_products: bool = Query(False, description="合并品类维度为单表"),
-):
-    """实销门店数统计 — 通用三维度 + 地域级别切换。"""
-    return _run_store_count(
-        db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products,
-    )
-
-
-@router.get("/stats/store_count/export")
-def export_store_count(
+@router.get("/stats/box_count")
+def box_count(
     db_key: str = validate_db_key,
     dimension: str = Query("city", description="统计维度: city | product | time"),
     region_level: str = Query("city", description="地域级别: city | province"),
@@ -505,22 +654,57 @@ def export_store_count(
     cities: Optional[str] = Query(None),
     provinces: Optional[str] = Query(None),
     products: Optional[str] = Query(None),
-    merge_cities: bool = Query(False),
-    merge_products: bool = Query(False),
+    merge_cities: bool = Query(False, description="合并地域维度为单表"),
+    merge_products: bool = Query(False, description="合并品类维度为单表"),
+    calc_yoy_mom: bool = Query(False, description="计算同比(去年同期)与环比(上个月)"),
 ):
-    """导出门店数统计结果为 xlsx（每个 table 一个 sheet，英文文件名）。"""
-    result = _run_store_count(
+    """实销盒数统计 — 通用三维度 + 地域级别切换。"""
+    if calc_yoy_mom:
+        return _compute_yoy_mom(
+            db_key, dimension, region_level, date_from, date_to, merge_months,
+            cities, provinces, products, merge_cities, merge_products,
+        )
+    return _run_box_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
         cities, provinces, products, merge_cities, merge_products,
     )
-    tables = result["tables"]
-    buf = _tables_to_xlsx(tables)
 
-    filename = f"store_count_{dimension}_{region_level}.xlsx"
+
+@router.get("/stats/box_count/export")
+def export_box_count(
+    db_key: str = validate_db_key,
+    dimension: str = Query("city", description="统计维度: city | product | time"),
+    region_level: str = Query("city", description="地域级别: city | province"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    merge_months: bool = Query(False),
+    cities: Optional[str] = Query(None),
+    provinces: Optional[str] = Query(None),
+    products: Optional[str] = Query(None),
+    merge_cities: bool = Query(False, description="合并地域维度为单表"),
+    merge_products: bool = Query(False, description="合并品类维度为单表"),
+    calc_yoy_mom: bool = Query(False, description="计算同比(去年同期)与环比(上个月)"),
+):
+    """导出盒数统计结果为 xlsx（每个 table 一个 sheet，英文文件名）。"""
+    if calc_yoy_mom:
+        result = _compute_yoy_mom(
+            db_key, dimension, region_level, date_from, date_to, merge_months,
+            cities, provinces, products, merge_cities, merge_products,
+        )
+    else:
+        result = _run_box_count(
+            db_key, dimension, region_level, date_from, date_to, merge_months,
+            cities, provinces, products, merge_cities, merge_products,
+        )
+    tables = result["tables"]
+    buf = _tables_to_xlsx(tables, calc_yoy_mom=calc_yoy_mom)
+
+    suffix = "_yoy_mom" if calc_yoy_mom else ""
+    filename = f"box_count_{dimension}_{region_level}{suffix}.xlsx"
     encoded = quote(filename)
     logger.info(
-        "门店数导出 %s dim=%s region=%s -> %d 表",
-        db_key, dimension, region_level, len(tables),
+        "盒数导出 %s dim=%s region=%s yoy_mom=%s -> %d 表",
+        db_key, dimension, region_level, calc_yoy_mom, len(tables),
     )
     return StreamingResponse(
         buf,

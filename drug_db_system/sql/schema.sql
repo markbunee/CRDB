@@ -53,6 +53,7 @@ CREATE TABLE sales (
     "业务日期"     DATE,
     "月度"         DATE,
     "企业名称"     TEXT,
+    "城市"         TEXT,
     "门店编码"     TEXT,
     "门店名称"     TEXT,
     "商品编码"     BIGINT,
@@ -60,7 +61,7 @@ CREATE TABLE sales (
     "规格"         TEXT,
     "厂家名称"     TEXT,
     "单位"         TEXT,
-    "生产批号"     BIGINT,
+    "生产批号"     TEXT,
     "生产日期"     BIGINT,
     "销售数量"     INTEGER,
     "供应商名称"   TEXT

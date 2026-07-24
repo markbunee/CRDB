@@ -39,6 +39,8 @@ CREATE INDEX IF NOT EXISTS idx_gaoji_store_code   ON gaoji.sales ("门店编码"
 CREATE INDEX IF NOT EXISTS idx_gaoji_prod_code    ON gaoji.sales ("商品编码");
 CREATE INDEX IF NOT EXISTS idx_gaoji_manufacturer ON gaoji.sales ("厂家名称");
 CREATE INDEX IF NOT EXISTS idx_gaoji_prod_date    ON gaoji.sales ("商品编码", "业务日期");
+CREATE INDEX IF NOT EXISTS idx_gaoji_city_date    ON gaoji.sales ("城市", "业务日期");
+CREATE INDEX IF NOT EXISTS idx_gaoji_month_city   ON gaoji.sales ("月度", "城市");
 -- 全文搜索
 CREATE INDEX IF NOT EXISTS idx_gaoji_fts_商品名称 ON gaoji.sales
     USING GIN (to_tsvector('simple', coalesce("商品名称", '')));
