@@ -73,10 +73,12 @@ SCHEMAS = {
             "date_col": "日期",
             "month_col": "月度",
             "store_col": "门店编码",
+            "store_name_col": "门店名称",
             "qty_col": "数量",
             "city_col": "城市",
             "province_col": "省份",
             "product_col": "商品编码",
+            "product_name_col": "商品名称",
         },
         # 行查询/导出过滤映射（前端参数名 → 实际列名）
         "filter_map": {
@@ -126,9 +128,11 @@ SCHEMAS = {
             "date_col": "业务日期",
             "month_col": "月度",
             "store_col": "门店编码",
+            "store_name_col": "门店名称",
             "qty_col": "销售数量",
             "city_col": "城市",
             "product_col": "商品编码",
+            "product_name_col": "商品名称",
         },
         # 行查询/导出过滤映射
         "filter_map": {
@@ -177,9 +181,11 @@ SCHEMAS = {
             "date_col": "过账日期",
             "month_col": "月度",
             "store_col": "店名/区域",
+            "store_name_col": "店名/区域",
             "qty_col": "销量",
             "city_col": "事业部名称",
             "product_col": "商品SAP编码",
+            "product_name_col": "商品名称",
             # 无 province_col — 海王无省份区分
         },
         # 行查询/导出过滤映射
@@ -244,3 +250,19 @@ def get_region_label(db_key: str) -> str:
 def supports_stats(db_key: str) -> bool:
     """该库是否支持统计功能（需有 field_map）。"""
     return bool(SCHEMAS[db_key].get("field_map"))
+
+
+# ---------- 门店能力分析（本期仅大参林·广州） ----------
+# 后续要开放其它库/城市，只需往这两个常量里加，前端自动跟随 meta 接口显隐。
+STORE_ABILITY_DB_KEYS = ("dashenlin",)
+STORE_ABILITY_CITY = "广州"
+
+
+def supports_store_ability(db_key: str) -> bool:
+    """该库是否开放「门店能力分析」。"""
+    return db_key in STORE_ABILITY_DB_KEYS
+
+
+def get_store_ability_city() -> str:
+    """门店能力分析当前固定的城市。"""
+    return STORE_ABILITY_CITY

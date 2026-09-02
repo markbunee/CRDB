@@ -16,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import FRONTEND_DIR
 from .logger import get_logger, setup_logging
-from .routers import meta, rows, export, stats, frontend_log, import_excel, excel_export, stats_store, stats_box
+from .routers import (meta, rows, export, stats, frontend_log, import_excel,
+                      excel_export, stats_store, stats_box, stats_store_ability)
 
 # 启动即初始化日志（写入 backend/log.txt）
 setup_logging()
@@ -67,6 +68,7 @@ app.include_router(import_excel.router)
 app.include_router(excel_export.router)
 app.include_router(stats_store.router)
 app.include_router(stats_box.router)
+app.include_router(stats_store_ability.router)
 
 
 # ---------- 健康检查 ----------

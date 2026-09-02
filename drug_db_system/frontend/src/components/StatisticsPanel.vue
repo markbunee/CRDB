@@ -42,17 +42,23 @@
           v-else-if="activeFunc === 'trend'"
           :db-key="dbKey"
         />
+        <StoreAbilityStats
+          v-else-if="activeFunc === 'store_ability'"
+          :db-key="dbKey"
+        />
       </section>
     </div>
   </el-drawer>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { Shop, TrendCharts, Box } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { Shop, TrendCharts, Box, Trophy } from '@element-plus/icons-vue'
 import StoreCityStats from './stats/StoreCityStats.vue'
 import BoxCountStats from './stats/BoxCountStats.vue'
 import SalesTrendStats from './stats/SalesTrendStats.vue'
+import StoreAbilityStats from './stats/StoreAbilityStats.vue'
+import { getDbConfig } from '@/utils/dbConfig'
 
 const props = defineProps<{
   modelValue: boolean
@@ -68,28 +74,65 @@ const drawerVisible = computed({
   set: (val) => emit('update:modelValue', val),
 })
 
-const menuItems = [
-  {
-    key: 'store_city',
-    name: '实销门店数统计',
-    desc: '城市维度 · 月度/区间',
-    icon: Shop,
-  },
-  {
-    key: 'box_count',
-    name: '实销盒数统计',
-    desc: '城市维度 · 月度/区间 · SUM(数量)',
-    icon: Box,
-  },
-  {
-    key: 'trend',
-    name: '销售趋势分析',
-    desc: '折线图 · 柱状图 · 可视化',
-    icon: TrendCharts,
-  },
-]
+/** 门店能力分析是否对当前库开放（本期仅大参林，由后端 meta 下发开关） */
+const abilityEnabled = ref(false)
+
+async function loadAbilityFlag() {
+  const cfg = await getDbConfig(props.dbKey)
+  abilityEnabled.value = cfg?.supports_store_ability ?? false
+}
+
+const menuItems = computed(() => {
+  const items: {
+    key: string
+    name: string
+    desc: string
+    icon: typeof Shop
+  }[] = [
+    {
+      key: 'store_city',
+      name: '实销门店数统计',
+      desc: '城市维度 · 月度/区间',
+      icon: Shop,
+    },
+    {
+      key: 'box_count',
+      name: '实销盒数统计',
+      desc: '城市维度 · 月度/区间 · SUM(数量)',
+      icon: Box,
+    },
+    {
+      key: 'trend',
+      name: '销售趋势分析',
+      desc: '折线图 · 柱状图 · 可视化',
+      icon: TrendCharts,
+    },
+  ]
+  if (abilityEnabled.value) {
+    items.push({
+      key: 'store_ability',
+      name: '门店能力分析',
+      desc: '广州 · 门店产出排行 · 品类能力',
+      icon: Trophy,
+    })
+  }
+  return items
+})
 
 const activeFunc = ref('store_city')
+
+onMounted(loadAbilityFlag)
+
+// 切换库后重新判断开关；若当前停留在新库不支持的功能上则回落到第一项
+watch(
+  () => props.dbKey,
+  async () => {
+    await loadAbilityFlag()
+    if (!menuItems.value.some((i) => i.key === activeFunc.value)) {
+      activeFunc.value = 'store_city'
+    }
+  },
+)
 </script>
 
 <style scoped>

@@ -61,6 +61,8 @@ export interface DbMeta {
   region_levels: string[]
   region_label: string
   supports_stats: boolean
+  supports_store_ability?: boolean
+  store_ability_city?: string
 }
 
 export function fetchDbs() {
@@ -345,4 +347,120 @@ export function exportBoxCount(
   } = {},
 ) {
   return _fetchBlob(`/api/${dbKey}/stats/box_count/export`, options)
+}
+
+// ---------- 门店能力分析（大参林 · 广州） ----------
+
+/** 单个品类在门店内的表现：盒数 + 占该门店实销总数的比例 */
+export interface StoreAbilityCategory {
+  product_code: string | number | null
+  product_name: string | null
+  qty: number
+  /** 占该门店实销总数的比例，0~1；门店总盒数为 0 时为 null */
+  share: number | null
+}
+
+export interface StoreAbilityStore {
+  rank: number
+  store_name: string
+  /** 该门店实销总盒数 */
+  qty: number
+  /** 该门店有销量的品类数 */
+  cat_cnt: number
+  /** 销量前 3 的品类，不足 3 个时数组变短 */
+  top_categories: StoreAbilityCategory[]
+  /** 末位品类（倒数第一）；品类数 <= 3 时会与 top_categories 中的某一项相同 */
+  last_category: StoreAbilityCategory | null
+}
+
+export interface StoreAbilityResponse {
+  db_key: string
+  city: string
+  date_from: string | null
+  date_to: string | null
+  summary: {
+    /** 广州范围内动销门店总数 */
+    store_count: number
+    /** 广州范围内实销总盒数 */
+    total_qty: number
+    /** 实际返回的门店数（<= top_n） */
+    returned: number
+    top_n: number
+  }
+  stores: StoreAbilityStore[]
+}
+
+/** 广州范围内「数据最新月份」的区间，用于默认填充时间范围 */
+export interface StoreAbilityLatestRange {
+  date_from: string | null
+  date_to: string | null
+  max_date: string | null
+}
+
+export function fetchStoreAbilityLatestRange(dbKey: string) {
+  return request<StoreAbilityLatestRange>(
+    `/api/${dbKey}/stats/store_ability/latest_range`,
+  )
+}
+
+/** 单门店按月产出趋势：一个自然月一个点 */
+export interface StoreAbilityTrendPoint {
+  /** YYYY-MM */
+  month: string
+  /** 该月实销盒数（区间内无销量补 0） */
+  qty: number
+  /** 是否完整月：查询区间起止完全覆盖该自然月；一般只有首尾月可能为 false */
+  complete: boolean
+}
+
+export interface StoreAbilityTrendResponse {
+  db_key: string
+  store_name: string
+  date_from: string
+  date_to: string
+  months: StoreAbilityTrendPoint[]
+}
+
+export function fetchStoreAbilityTrend(
+  dbKey: string,
+  options: {
+    store_name: string
+    date_from: string
+    date_to: string
+    /** 品类（商品编码），英文逗号分隔；留空 = 全部品类（与主表口径一致） */
+    products?: string
+  },
+) {
+  return request<StoreAbilityTrendResponse>(
+    `/api/${dbKey}/stats/store_ability/store_trend`,
+    options,
+  )
+}
+
+export function fetchStoreAbility(
+  dbKey: string,
+  options: {
+    date_from?: string
+    date_to?: string
+    /** 品类（商品编码），英文逗号分隔；留空 = 全部品类 */
+    products?: string
+    /** 门店名称关键词，英文逗号分隔，模糊匹配；留空 = 全部门店 */
+    stores?: string
+    top_n?: number
+  } = {},
+) {
+  return request<StoreAbilityResponse>(`/api/${dbKey}/stats/store_ability`, options)
+}
+
+export function exportStoreAbility(
+  dbKey: string,
+  options: {
+    date_from?: string
+    date_to?: string
+    products?: string
+    stores?: string
+    top_n?: number
+  } = {},
+) {
+  return _fetchBlob(`/api/${dbKey}/stats/store_ability/export`, options)
 }
