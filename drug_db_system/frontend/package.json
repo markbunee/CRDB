@@ -1,5 +1,5 @@
 {
-  "name": "frontend",
+  "name": "@project-group/crdb-frontend",
   "version": "0.0.0",
   "private": true,
   "type": "module",
