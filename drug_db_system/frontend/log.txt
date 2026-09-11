@@ -227,3 +227,280 @@ ResizeObserver loop completed with undelivered notifications. @ http://localhost
 2026-09-02 23:23:11 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (396ms)
 2026-09-02 23:23:18 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (396ms)
 2026-09-02 23:33:10 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (329ms)
+2026-09-02 23:50:31 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (132ms)
+API /api/dbs -> 200 (147ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (42ms)
+2026-09-02 23:50:40 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (322ms)
+2026-09-02 23:50:43 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (1826ms)
+2026-09-02 23:50:54 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (4388ms)
+2026-09-02 23:50:58 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (2198ms)
+2026-09-02 23:52:00 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (1565ms)
+2026-09-02 23:52:02 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (874ms)
+2026-09-02 23:53:32 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (1179ms)
+2026-09-03 00:02:34 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (1570ms)
+2026-09-03 00:14:59 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (5307ms)
+2026-09-03 00:15:17 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (2419ms)
+2026-09-03 00:20:04 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (109ms)
+API /api/dbs -> 200 (132ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (35ms)
+2026-09-03 00:20:13 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (322ms)
+2026-09-03 00:20:26 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (315ms)
+API /api/dashenlin/stats/store_ability/latest_range -> 200 (9ms)
+2026-09-03 00:20:28 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (144ms)
+2026-09-03 00:21:13 | ERROR   | frontend | BoxCountStats | 实销盒数统计失败: mapNames is not defined
+2026-09-03 00:21:36 | ERROR   | frontend | BoxCountStats | 实销盒数统计失败: mapNames is not defined
+2026-09-03 00:22:04 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (32ms)
+API /api/dbs -> 200 (33ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (19ms)
+2026-09-03 00:22:10 | ERROR   | frontend | BoxCountStats | 实销盒数统计失败: mapNames is not defined
+2026-09-03 00:23:34 | ERROR   | frontend | BoxCountStats | 实销盒数统计失败: mapNames is not defined
+2026-09-03 00:25:15 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (96ms)
+API /api/dbs -> 200 (101ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (17ms)
+2026-09-03 00:25:28 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (522ms)
+2026-09-03 00:25:35 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (455ms)
+API /api/dashenlin/stats/box_count -> 200 (124ms)
+2026-09-03 00:29:27 | INFO    | frontend | request | API /api/dbs -> 200 (341ms)
+API /api/gaoji/rows -> 200 (262ms)
+2026-09-03 00:29:39 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (333ms)
+2026-09-03 00:29:42 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (568ms)
+2026-09-03 00:29:51 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (325ms)
+2026-09-03 00:30:00 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (1490ms)
+API /api/gaoji/stats/box_count -> 200 (129ms)
+2026-09-03 00:30:02 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (127ms)
+API /api/gaoji/stats/box_count -> 200 (100ms)
+2026-09-03 00:30:07 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (192ms)
+2026-09-03 08:38:25 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-09-04 16:08:57 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-09-04 16:10:32 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (111ms)
+API /api/dbs -> 200 (121ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (45ms)
+2026-09-04 16:10:35 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (13ms)
+2026-09-06 13:33:43 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-09-06 13:34:57 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (213ms)
+API /api/dbs -> 200 (234ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (60ms)
+2026-09-06 13:39:39 | INFO    | frontend | request | API /api/dbs -> 200 (338ms)
+API /api/gaoji/rows -> 200 (272ms)
+API /api/dbs -> 200 (31ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (330ms)
+2026-09-06 13:41:30 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (5890ms)
+2026-09-06 13:42:53 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (361ms)
+2026-09-06 13:43:04 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (727ms)
+2026-09-06 13:43:08 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (650ms)
+2026-09-06 13:43:37 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (521ms)
+2026-09-06 13:43:57 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (549ms)
+2026-09-06 13:44:21 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (4313ms)
+2026-09-06 13:44:34 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (5293ms)
+2026-09-06 13:44:38 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (367ms)
+2026-09-06 13:45:11 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (3939ms)
+2026-09-06 13:46:01 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (2341ms)
+2026-09-06 13:46:28 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (1423ms)
+2026-09-06 13:46:50 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (1591ms)
+2026-09-06 13:47:03 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (1475ms)
+2026-09-06 13:48:14 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (4643ms)
+2026-09-06 13:49:01 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/store_trend -> 200 (1785ms)
+2026-09-06 13:49:11 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability -> 200 (1957ms)
+2026-09-06 13:54:38 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (353ms)
+2026-09-06 13:58:09 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (124ms)
+API /api/dbs -> 200 (124ms)
+API /api/dashenlin/rows -> 200 (33ms)
+2026-09-07 19:26:30 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (137ms)
+API /api/dbs -> 200 (154ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (53ms)
+2026-09-07 19:26:37 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (333ms)
+2026-09-07 19:27:21 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (3506ms)
+2026-09-07 19:27:30 | ERROR   | frontend | request | API 500 /api/dashenlin/stats/box_count: {"detail":"统计失败: invalid input syntax for type bigint: \"易善复\"\nLINE 1: ...01' AND \"日期\" <= '2026-06-30' AND \"商品编码\" IN ('易善复') ...\n                                                             ^\n"}
+API 请求失败 /api/dashenlin/stats/box_count: {"detail":"统计失败: invalid input syntax for type bigint: \"易善复\"\nLINE 1: ...01' AND \"日期\" <= '2026-06-30' AND \"商品编码\" IN ('易善复') ...\n                                                             ^\n"}
+实销盒数统计失败: {"detail":"统计失败: invalid input syntax for type bigint: \"易善复\"\nLINE 1: ...01' AND \"日期\" <= '2026-06-30' AND \"商品编码\" IN ('易善复') ...\n                                                             ^\n"}
+2026-09-07 19:27:35 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (945ms)
+2026-09-07 19:27:40 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (800ms)
+2026-09-07 19:27:44 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (550ms)
+2026-09-07 19:28:14 | INFO    | frontend | request | API /api/dbs -> 200 (20ms)
+API /api/gaoji/rows -> 200 (347ms)
+2026-09-07 19:28:43 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (374ms)
+2026-09-07 19:28:50 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (384ms)
+2026-09-07 19:28:54 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (337ms)
+API /api/gaoji/stats/box_count -> 200 (33ms)
+2026-09-07 19:29:38 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (19ms)
+2026-09-07 19:29:48 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (20ms)
+2026-09-07 19:29:50 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (21ms)
+2026-09-07 19:30:04 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (18ms)
+API /api/gaoji/stats/box_count -> 200 (331ms)
+2026-09-07 19:30:13 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (28ms)
+2026-09-07 19:30:22 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (49ms)
+2026-09-07 19:30:27 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (31ms)
+2026-09-07 19:30:34 | INFO    | frontend | request | API /api/dbs -> 200 (12ms)
+API /api/haiwang/rows -> 200 (345ms)
+2026-09-07 19:30:48 | INFO    | frontend | request | API /api/haiwang/stats/box_count -> 200 (514ms)
+API /api/haiwang/stats/box_count -> 200 (24ms)
+2026-09-07 19:30:52 | INFO    | frontend | request | API /api/haiwang/stats/box_count -> 200 (17ms)
+API /api/haiwang/stats/box_count -> 200 (327ms)
+2026-09-07 19:31:14 | INFO    | frontend | request | API /api/dbs -> 200 (13ms)
+API /api/gaoji/rows -> 200 (316ms)
+2026-09-07 19:31:26 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (345ms)
+2026-09-07 19:31:30 | INFO    | frontend | request | API /api/gaoji/stats/box_count -> 200 (340ms)
+2026-09-07 19:33:40 | INFO    | frontend | request | API /api/dbs -> 200 (340ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (236ms)
+2026-09-07 19:34:34 | INFO    | frontend | request | API /api/dashenlin/stats/store_ability/latest_range -> 200 (326ms)
+2026-09-07 19:35:13 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (3093ms)
+2026-09-07 19:35:19 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (710ms)
+2026-09-07 19:36:34 | INFO    | frontend | request | API /api/dbs -> 200 (330ms)
+API /api/gaoji/rows -> 200 (252ms)
+2026-09-07 19:36:49 | INFO    | frontend | request | API /api/gaoji/rows -> 200 (371ms)
+2026-09-07 19:37:42 | INFO    | frontend | request | API /api/dbs -> 200 (22ms)
+API /api/haiwang/rows -> 200 (326ms)
+2026-09-07 19:37:54 | INFO    | frontend | request | API /api/haiwang/rows -> 200 (949ms)
+2026-09-07 19:37:58 | INFO    | frontend | request | API /api/haiwang/rows -> 200 (1169ms)
+2026-09-08 00:31:27 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-09-08 00:36:04 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (103ms)
+API /api/dbs -> 200 (104ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (33ms)
+2026-09-08 00:36:26 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (1422ms)
+2026-09-08 00:36:35 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (344ms)
+2026-09-08 00:36:37 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (323ms)
+2026-09-08 00:36:47 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (455ms)
+2026-09-08 00:36:58 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (326ms)
+2026-09-08 00:37:36 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (2993ms)
+2026-09-08 00:37:47 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (928ms)
+API /api/dashenlin/stats/box_count -> 200 (529ms)
+2026-09-08 00:37:59 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (469ms)
+2026-09-08 00:38:05 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (205ms)
+2026-09-08 15:38:32 | ERROR   | frontend | main | 前端应用已挂载
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+API 500 /api/dbs: Internal Server Error
+API 请求失败 /api/dbs: Internal Server Error
+加载库元数据失败: Internal Server Error
+API 500 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+API 请求失败 /api/dashenlin/rows: {"detail":"查询失败: connection to server at \"localhost\" (127.0.0.1), port 5433 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"}
+2026-09-08 15:38:53 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (113ms)
+API /api/dbs -> 200 (122ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (41ms)
+2026-09-08 15:44:29 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (532ms)
+2026-09-08 15:44:35 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (328ms)
+2026-09-08 15:44:52 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (39ms)
+API /api/dbs -> 200 (379ms)
+2026-09-08 15:45:12 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (44ms)
+2026-09-08 15:45:22 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (36ms)
+2026-09-08 15:45:46 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (20ms)
+2026-09-08 15:49:42 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (388ms)
+2026-09-08 15:49:49 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (346ms)
+2026-09-08 15:58:32 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (346ms)
+2026-09-08 15:58:40 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (674ms)
+2026-09-08 15:58:48 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (351ms)
+API /api/dashenlin/rows -> 200 (26ms)
+2026-09-08 16:04:12 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (1051ms)
+2026-09-08 16:49:16 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (113ms)
+API /api/dbs -> 200 (113ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (150ms)
+2026-09-08 17:10:57 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (39ms)
+API /api/dbs -> 200 (48ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (57ms)
+2026-09-10 10:32:46 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (100ms)
+API /api/dbs -> 200 (118ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (113ms)
+2026-09-10 10:33:32 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (345ms)
+API /api/dashenlin/rows -> 200 (449ms)
+2026-09-10 10:33:41 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (4365ms)
+2026-09-10 10:42:20 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (2486ms)
+2026-09-10 10:53:31 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (510ms)
+2026-09-10 10:53:35 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (338ms)
+2026-09-10 10:53:54 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (4683ms)
+2026-09-10 10:53:59 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (436ms)
+2026-09-10 11:02:29 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (5714ms)
+2026-09-10 11:28:18 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (101ms)
+API /api/dbs -> 200 (101ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (98ms)
+2026-09-10 19:46:31 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (125ms)
+API /api/dbs -> 200 (134ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (106ms)
+2026-09-10 19:47:01 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (5061ms)
+2026-09-10 20:01:35 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (111ms)
+API /api/dbs -> 200 (123ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (78ms)
+2026-09-10 20:02:22 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (6194ms)
+2026-09-10 20:08:04 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (340ms)
+2026-09-10 20:09:18 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (334ms)
+2026-09-10 20:09:28 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (5898ms)
+2026-09-10 20:09:40 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (1969ms)
+2026-09-10 20:09:51 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (477ms)
+2026-09-10 20:13:57 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (357ms)
+2026-09-10 20:14:14 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (836ms)
+2026-09-10 20:15:25 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (533ms)
+2026-09-10 20:15:35 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (5288ms)
+2026-09-10 20:15:39 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (470ms)
+2026-09-10 20:15:42 | INFO    | frontend | request | API /api/dashenlin/rows -> 200 (464ms)
+API /api/dashenlin/rows -> 200 (171ms)
+2026-09-10 20:20:58 | INFO    | frontend | request | API /api/dashenlin/stats/box_count -> 200 (721ms)
+2026-09-10 21:17:57 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (89ms)
+API /api/dbs -> 200 (117ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (202ms)
+2026-09-11 00:04:28 | INFO    | frontend | main | 前端应用已挂载
+API /api/dbs -> 200 (131ms)
+API /api/dbs -> 200 (131ms)
+ResizeObserver loop completed with undelivered notifications. @ http://localhost:5173/dashenlin:0
+API /api/dashenlin/rows -> 200 (182ms)

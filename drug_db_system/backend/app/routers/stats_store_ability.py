@@ -29,7 +29,7 @@ GET /stats/store_ability/latest_range 返回广州「数据最新月份」的起
 import calendar
 import io
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import quote
 
@@ -42,6 +42,7 @@ from psycopg2 import sql
 
 from ..dependencies import validate_db_key
 from ..models.schema_def import get_cfg, get_field_map, supports_store_ability
+from ..services.product_map import get_product_map
 from ..database import get_conn
 from ..logger import get_logger
 
@@ -59,6 +60,8 @@ MAX_TOP_N = 500
 TOP_CATEGORY_COUNT = 3  # 取销量前 3 的品类
 # 门店名称关键词个数上限：每个词生成一个 ILIKE，过多会拖慢查询
 MAX_STORE_TERMS = 20
+# 门店趋势按天展示的柱子上限（约 10 年），防止误选超长区间导致柱子密到无法阅读
+MAX_TREND_DAYS = 3660
 
 # ---------- Excel 样式（与 stats_store.py 保持一致） ----------
 HEADER_FILL = PatternFill(start_color="3B6BD6", end_color="3B6BD6", fill_type="solid")
@@ -87,24 +90,18 @@ def _escape_like(val: str) -> str:
     return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _month_sequence(d_from: date, d_to: date) -> List[dict]:
-    """生成 [d_from, d_to] 覆盖的每个自然月（升序）：{month, start, end}。
+def _day_sequence(d_from: date, d_to: date) -> List[str]:
+    """生成 [d_from, d_to] 区间内的每一天（升序），返回 YYYY-MM-DD 字符串列表。
 
-    month 为 YYYY-MM 字符串；start/end 为该月首日 / 末日，用于判断「完整月」。
+    用于补齐没有销量的日期（qty 补 0），保证柱状图横轴连续、柱子疏密一致。
     """
-    months: List[dict] = []
-    y, m = d_from.year, d_from.month
-    while (y, m) <= (d_to.year, d_to.month):
-        last_day = calendar.monthrange(y, m)[1]
-        months.append({
-            "month": f"{y:04d}-{m:02d}",
-            "start": date(y, m, 1),
-            "end": date(y, m, last_day),
-        })
-        m += 1
-        if m > 12:
-            y, m = y + 1, 1
-    return months
+    days: List[str] = []
+    cur = d_from
+    step = timedelta(days=1)
+    while cur <= d_to:
+        days.append(cur.strftime("%Y-%m-%d"))
+        cur += step
+    return days
 
 
 def _safe_sheet_name(title: str) -> str:
@@ -120,10 +117,12 @@ def _run_store_ability(
     products: Optional[str],
     top_n: int,
     stores: Optional[str] = None,
+    map_names: bool = False,
 ) -> dict:
     """门店能力分析核心逻辑：查询 + 组装，JSON 端点与导出共用。
 
     stores / products 均可选，留空表示不限（全部门店 / 全部品类）。
+    map_names=True 时品类显示名优先用映射表中文名，无映射回落到库内商品名称。
     """
     fm = get_field_map(db_key)
     if not fm:
@@ -139,6 +138,9 @@ def _run_store_ability(
             "门店能力分析必须指定日期范围（date_from 或 date_to 至少其一），"
             "以避免对全量销售明细做全表扫描。",
         )
+
+    # 品类编码映射：仅在开关打开时读盘（文件很小，读一次足够）
+    pmap: Dict[str, str] = get_product_map(db_key) if map_names else {}
 
     store_col = fm["store_name_col"]
     product_col = fm["product_col"]
@@ -298,9 +300,12 @@ def _run_store_ability(
             }
             stores[name] = s
 
+        # map_names 开启时：映射表中文名优先，无映射回落到库内商品名称
+        code_str = str(r["product_code"]) if r["product_code"] is not None else ""
+        display_name = pmap.get(code_str) or r["product_name"] if pmap else r["product_name"]
         item = {
             "product_code": r["product_code"],
-            "product_name": r["product_name"],
+            "product_name": display_name,
             "qty": qty,
             "share": (qty / store_qty) if store_qty else None,
         }
@@ -402,9 +407,12 @@ def store_ability(
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔；留空=全部品类"),
     stores: Optional[str] = Query(None, description="门店名称关键词，英文逗号分隔，模糊匹配；留空=全部门店"),
     top_n: int = Query(DEFAULT_TOP_N, ge=1, le=MAX_TOP_N, description="返回前 N 家门店"),
+    map_names: bool = Query(False, description="品类显示映射表中文名（无映射回落商品名称）"),
 ):
     """门店能力分析（大参林·广州）：总产出排行 + 品类 Top3 与末位。"""
-    return _run_store_ability(db_key, date_from, date_to, products, top_n, stores=stores)
+    return _run_store_ability(
+        db_key, date_from, date_to, products, top_n, stores=stores, map_names=map_names,
+    )
 
 
 @router.get("/stats/store_ability/export")
@@ -415,9 +423,12 @@ def export_store_ability(
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔；留空=全部品类"),
     stores: Optional[str] = Query(None, description="门店名称关键词，英文逗号分隔，模糊匹配；留空=全部门店"),
     top_n: int = Query(DEFAULT_TOP_N, ge=1, le=MAX_TOP_N),
+    map_names: bool = Query(False, description="品类显示映射表中文名（与页面口径一致）"),
 ):
     """导出门店能力分析结果为 xlsx。"""
-    result = _run_store_ability(db_key, date_from, date_to, products, top_n, stores=stores)
+    result = _run_store_ability(
+        db_key, date_from, date_to, products, top_n, stores=stores, map_names=map_names,
+    )
     buf = _store_ability_to_xlsx(result)
 
     filename = "store_ability_guangzhou.xlsx"
@@ -493,12 +504,12 @@ def store_ability_trend(
     date_to: str = Query(..., description="日期止 YYYY-MM-DD（必填）"),
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔；留空=全部"),
 ):
-    """单个门店在日期区间内的「按月产出」折线数据。
+    """单个门店在日期区间内的「按天产出」数据。
 
-    - 按自然月聚合实销盒数；区间内没有销量的月份补 0，保证折线连续。
-    - complete 标记该月是否为「完整月」：仅当查询区间的起止完全覆盖该自然月时
-      才为 true，因此一般只有首尾两个月可能为 false（前端据此提示非完整月）。
-    - products 与主表共用同一筛选口径，保证「表格里的实销总数 = 折线各月合计」。
+    - 按天聚合实销盒数；区间内没有销量的日期补 0，保证柱状图横轴连续。
+    - 不再区分「完整月 / 非完整月」：按天呈现时每一天本身就是完整的，
+      首尾日期不会被截断，因此不存在部分月份的口径问题。
+    - products 与主表共用同一筛选口径，保证「表格里的实销总数 = 图表各日合计」。
     """
     fm = get_field_map(db_key)
     if not fm:
@@ -513,6 +524,14 @@ def store_ability_trend(
         raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
     if d_from > d_to:
         raise HTTPException(400, "date_from 不能晚于 date_to")
+
+    # 按天聚合的柱子上限：防止误选超长区间（如十年）导致柱子密到无法阅读
+    day_count = (d_to - d_from).days + 1
+    if day_count > MAX_TREND_DAYS:
+        raise HTTPException(
+            400,
+            f"日期区间过长（{day_count} 天），按天展示上限为 {MAX_TREND_DAYS} 天，请缩小范围",
+        )
 
     store_col = fm["store_name_col"]
     product_col = fm["product_col"]
@@ -546,7 +565,7 @@ def store_ability_trend(
 
     where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
     stmt = sql.SQL(
-        "SELECT to_char({date}, 'YYYY-MM') AS month, "
+        "SELECT to_char({date}, 'YYYY-MM-DD') AS day, "
         "SUM(COALESCE({qty}, 0)) AS qty "
         "FROM {table}{where} "
         "GROUP BY 1 ORDER BY 1"
@@ -567,20 +586,16 @@ def store_ability_trend(
         logger.error("门店月度趋势 %s/%s 失败: %s", db_key, store_name, e)
         raise HTTPException(500, f"统计失败: {e}")
 
-    # Decimal -> float；再用月份序列补齐区间内没有销量的月份（qty=0）
-    qty_by_month = {r["month"]: float(r["qty"] or 0) for r in raw_rows}
-    months = [
-        {
-            "month": info["month"],
-            "qty": qty_by_month.get(info["month"], 0),
-            "complete": info["start"] >= d_from and info["end"] <= d_to,
-        }
-        for info in _month_sequence(d_from, d_to)
+    # Decimal -> float；再用日期序列补齐区间内没有销量的日期（qty=0）
+    qty_by_day = {r["day"]: float(r["qty"] or 0) for r in raw_rows}
+    days = [
+        {"date": d, "qty": qty_by_day.get(d, 0)}
+        for d in _day_sequence(d_from, d_to)
     ]
 
     logger.info(
-        "门店月度趋势 %s store=%s date=[%s,%s] products=%s -> %d 个月",
-        db_key, store_name, date_from, date_to, products or "-", len(months),
+        "门店每日趋势 %s store=%s date=[%s,%s] products=%s -> %d 天",
+        db_key, store_name, date_from, date_to, products or "-", len(days),
     )
 
     return {
@@ -588,5 +603,5 @@ def store_ability_trend(
         "store_name": store_name.strip(),
         "date_from": date_from,
         "date_to": date_to,
-        "months": months,
+        "days": days,
     }

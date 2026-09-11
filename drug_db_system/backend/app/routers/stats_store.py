@@ -26,6 +26,7 @@ from psycopg2 import sql
 
 from ..dependencies import validate_db_key
 from ..models.schema_def import get_cfg, get_field_map, get_region_levels, get_region_label
+from ..services.product_map import get_product_map
 from ..database import get_conn
 from ..logger import get_logger
 
@@ -68,12 +69,17 @@ def _val_to_str(val: Any) -> str:
     return str(val)
 
 
-def _fmt_val(fm: Dict[str, str], col_name: Optional[str], val: Any) -> Optional[str]:
+def _fmt_val(fm: Dict[str, str], col_name: Optional[str], val: Any,
+             pmap: Optional[Dict[str, str]] = None) -> Optional[str]:
     if col_name is None or val is None:
         return None
     if col_name == fm["month_col"]:
         return _fmt_month(val)
-    return _val_to_str(val)
+    s = _val_to_str(val)
+    # 品类编码 → 品类中文名（仅 map_names 开启时 pmap 非空；无映射的编码保持原样）
+    if pmap and col_name == fm["product_col"]:
+        return pmap.get(s, s)
+    return s
 
 
 def _range_label(date_from: Optional[str], date_to: Optional[str]) -> str:
@@ -165,8 +171,13 @@ def _run_store_count(
     products: Optional[str],
     merge_cities: bool,
     merge_products: bool,
+    map_names: bool = False,
 ) -> dict:
-    """门店数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。"""
+    """门店数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。
+
+    map_names=True 时把品类编码翻译成映射表中文名（无映射保持编码），
+    JSON 与导出共用本函数，因此两者的口径天然一致。
+    """
     fm = get_field_map(db_key)
     if not fm:
         raise HTTPException(400, f"该统计功能暂不支持数据库: {db_key}")
@@ -274,11 +285,15 @@ def _run_store_count(
         logger.error("门店数统计 %s 失败: %s", db_key, e)
         raise HTTPException(500, f"统计失败: {e}")
 
+    # 品类编码映射：仅在开关打开时读盘（文件很小，读一次足够）
+    pmap: Optional[Dict[str, str]] = get_product_map(db_key) if map_names else None
+
     tables = _pivot(
         raw_rows, fm, dimension, merge_for,
         date_from, date_to,
         split_col, row_col, col_col,
         split_name, row_name, col_name, region_name,
+        pmap,
     )
 
     logger.info(
@@ -314,6 +329,7 @@ def _pivot(
     row_name: str,
     col_name: str,
     region_name: str,
+    pmap: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     month_col = fm["month_col"]
     merge_split = merge_for.get(split_col, False) if split_col else False
@@ -351,12 +367,12 @@ def _pivot(
     if merge_split:
         split_labels: List[Optional[str]] = [None]
     else:
-        split_labels = [_fmt_val(fm, split_col, v) for v in _safe_sort(split_raw)]
+        split_labels = [_fmt_val(fm, split_col, v, pmap) for v in _safe_sort(split_raw)]
 
     if merge_row:
         row_keys = [f"全部{row_name}（合并）"]
     else:
-        row_keys = [_fmt_val(fm, row_col, v) for v in _safe_sort(row_raw)] if row_col else []
+        row_keys = [_fmt_val(fm, row_col, v, pmap) for v in _safe_sort(row_raw)] if row_col else []
 
     if col_col:
         if col_is_month_merged:
@@ -364,7 +380,7 @@ def _pivot(
         elif merge_col:
             col_labels = [f"全部{col_name}（合并）"]
         else:
-            col_labels = [_fmt_val(fm, col_col, v) for v in _safe_sort(col_raw)]
+            col_labels = [_fmt_val(fm, col_col, v, pmap) for v in _safe_sort(col_raw)]
     else:
         col_labels = []
 
@@ -374,18 +390,18 @@ def _pivot(
         if merge_split:
             sl: Optional[str] = None
         else:
-            sl = _fmt_val(fm, split_col, r.get(split_col))
+            sl = _fmt_val(fm, split_col, r.get(split_col), pmap)
         if merge_row:
             rk = f"全部{row_name}（合并）"
         else:
-            rk = _fmt_val(fm, row_col, r.get(row_col)) if row_col else ""
+            rk = _fmt_val(fm, row_col, r.get(row_col), pmap) if row_col else ""
         if col_col:
             if col_is_month_merged:
                 cl = _range_label(date_from, date_to)
             elif merge_col:
                 cl = f"全部{col_name}（合并）"
             else:
-                cl = _fmt_val(fm, col_col, r.get(col_col))
+                cl = _fmt_val(fm, col_col, r.get(col_col), pmap)
         else:
             cl = ""
         index[(sl, rk, cl)] = count
@@ -486,11 +502,12 @@ def store_count(
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔"),
     merge_cities: bool = Query(False, description="合并地域维度为单表"),
     merge_products: bool = Query(False, description="合并品类维度为单表"),
+    map_names: bool = Query(False, description="品类编码映射为中文名（无映射保持编码）"),
 ):
     """实销门店数统计 — 通用三维度 + 地域级别切换。"""
     return _run_store_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products,
+        cities, provinces, products, merge_cities, merge_products, map_names,
     )
 
 
@@ -507,11 +524,12 @@ def export_store_count(
     products: Optional[str] = Query(None),
     merge_cities: bool = Query(False),
     merge_products: bool = Query(False),
+    map_names: bool = Query(False, description="品类编码映射为中文名（与页面口径一致）"),
 ):
     """导出门店数统计结果为 xlsx（每个 table 一个 sheet，英文文件名）。"""
     result = _run_store_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products,
+        cities, provinces, products, merge_cities, merge_products, map_names,
     )
     tables = result["tables"]
     buf = _tables_to_xlsx(tables)

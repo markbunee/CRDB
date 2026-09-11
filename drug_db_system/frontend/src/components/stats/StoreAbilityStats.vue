@@ -51,6 +51,13 @@
         </div>
 
         <div class="filter-group filter-actions">
+          <div class="map-toggle">
+            <el-switch v-model="mapNames" size="small" />
+            <span class="map-toggle-label">品类映射</span>
+            <el-button link type="primary" size="small" @click="mapManagerVisible = true">
+              管理
+            </el-button>
+          </div>
           <el-button type="primary" :loading="loading" @click="handleQuery">
             <el-icon><Search /></el-icon> 统计
           </el-button>
@@ -69,7 +76,7 @@
           范围：{{ city }} · 按「门店名称」统计实销盒数 ·
           门店与品类均支持英文逗号分隔多个查询，留空表示全部 ·
           门店为模糊包含匹配 ·
-          点击门店名称可查看该店按月产出趋势 ·
+          点击门店名称可查看该店按日产出趋势 ·
           品类占比 = 该品类盒数 ÷ 该门店实销总数 ·
           末位品类为该店销量倒数第一（品类数 ≤ 3 时会与前列重复）
         </span>
@@ -182,11 +189,14 @@
       :date-to="dateRange?.[1] || ''"
       :products="products"
     />
+
+    <!-- 品类映射管理弹窗 -->
+    <ProductMapManager v-model="mapManagerVisible" :db-key="dbKey" @saved="onMapSaved" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, watch, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Search, RefreshRight, InfoFilled, DataAnalysis, Download } from '@element-plus/icons-vue'
 import CategoryCell from './CategoryCell.vue'
@@ -203,6 +213,8 @@ import {
 } from '@/api/client'
 import { getCurrentMonthRange } from '@/utils/date'
 import { logger } from '@/utils/logger'
+import { loadMapPref, saveMapPref } from '@/utils/mapPref'
+import ProductMapManager from './ProductMapManager.vue'
 
 const props = defineProps<{
   dbKey: string
@@ -243,6 +255,20 @@ onMounted(async () => {
 
 const loading = ref(false)
 const exporting = ref(false)
+
+// ---------- 品类映射（四个统计页共用同一份开关偏好） ----------
+const mapNames = ref(loadMapPref())
+const mapManagerVisible = ref(false)
+
+// 切换开关：持久化偏好；已有结果时自动按新口径重查
+watch(mapNames, (v) => {
+  saveMapPref(v)
+  if (stores.value.length > 0) handleQuery()
+})
+
+function onMapSaved() {
+  if (stores.value.length > 0) handleQuery()
+}
 
 // ---------- 门店月度趋势弹窗 ----------
 const trendVisible = ref(false)
@@ -298,6 +324,7 @@ async function handleQuery() {
       stores: storeKeyword.value || undefined,
       products: products.value || undefined,
       top_n: topN.value,
+      map_names: mapNames.value,
     })
     summary.value = res.summary
     stores.value = res.stores
@@ -335,6 +362,7 @@ async function handleExport() {
       stores: storeKeyword.value || undefined,
       products: products.value || undefined,
       top_n: topN.value,
+      map_names: mapNames.value,
     })
     const from = dateRange.value?.[0] || 'all'
     const to = dateRange.value?.[1] || 'all'
@@ -482,6 +510,19 @@ async function handleExport() {
 
 .store-link:hover {
   text-decoration: underline;
+}
+
+.map-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+  white-space: nowrap;
+}
+
+.map-toggle-label {
+  font-size: 12px;
+  color: #606266;
 }
 
 .rank-badge {

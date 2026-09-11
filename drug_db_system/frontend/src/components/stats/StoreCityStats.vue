@@ -99,6 +99,13 @@
         </div>
 
         <div class="filter-group filter-actions">
+          <div class="map-toggle">
+            <el-switch v-model="mapNames" size="small" />
+            <span class="map-toggle-label">品类映射</span>
+            <el-button link type="primary" size="small" @click="mapManagerVisible = true">
+              管理
+            </el-button>
+          </div>
           <el-button type="primary" :loading="loading" @click="handleQuery">
             <el-icon><Search /></el-icon> 统计
           </el-button>
@@ -173,11 +180,14 @@
         <p>点击「统计」按钮查看门店数统计结果</p>
       </div>
     </div>
+
+    <!-- 品类映射管理弹窗 -->
+    <ProductMapManager v-model="mapManagerVisible" :db-key="dbKey" @saved="onMapSaved" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Search,
@@ -201,6 +211,8 @@ import {
 import { getCurrentMonthRange } from '@/utils/date'
 import { logger } from '@/utils/logger'
 import { getDbConfig } from '@/utils/dbConfig'
+import { loadMapPref, saveMapPref } from '@/utils/mapPref'
+import ProductMapManager from './ProductMapManager.vue'
 
 const props = defineProps<{
   dbKey: string
@@ -229,6 +241,20 @@ const mergeProducts = ref(false)
 const tables = ref<StoreCountTable[]>([])
 const loading = ref(false)
 const exporting = ref(false)
+
+// ---------- 品类映射（四个统计页共用同一份开关偏好） ----------
+const mapNames = ref(loadMapPref())
+const mapManagerVisible = ref(false)
+
+// 切换开关：持久化偏好；已有结果时自动按新口径重查，免去手动再点一次
+watch(mapNames, (v) => {
+  saveMapPref(v)
+  if (tables.value.length > 0) handleQuery()
+})
+
+function onMapSaved() {
+  if (tables.value.length > 0) handleQuery()
+}
 
 const regionLabel = computed(() =>
   regionLevel.value === 'province' && hasProvince.value ? '省份' : (dbConfig.value?.region_label || '城市'),
@@ -308,6 +334,7 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      map_names: mapNames.value,
     })
     tables.value = res.tables
     if (res.tables.length === 0) {
@@ -352,6 +379,7 @@ async function handleExport() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      map_names: mapNames.value,
     })
     const filename = `store_count_${dimension.value}_${regionLevel.value}.xlsx`
     downloadBlob(blob, filename)
@@ -490,6 +518,19 @@ function countClass(val: number | undefined): string {
   align-items: flex-end;
   gap: 8px;
   margin-left: auto;
+}
+
+.map-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+  white-space: nowrap;
+}
+
+.map-toggle-label {
+  font-size: 12px;
+  color: #606266;
 }
 
 .hint-bar {

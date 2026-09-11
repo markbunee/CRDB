@@ -1,48 +1,33 @@
 <template>
   <el-dialog
     v-model="visible"
-    :title="`${storeName} · 月度产出趋势`"
-    width="780px"
+    :title="`${storeName} · 每日产出趋势`"
+    width="860px"
     align-center
     destroy-on-close
   >
-    <div v-loading="loading" element-loading-text="加载月度数据..." class="trend-body">
-      <template v-if="months.length > 0">
+    <div v-loading="loading" element-loading-text="加载每日数据..." class="trend-body">
+      <template v-if="days.length > 0">
         <!-- 区间摘要 -->
         <div class="trend-meta">
           <span class="meta-range">{{ dateFrom }} 至 {{ dateTo }}</span>
           <span class="meta-total">区间合计：<b>{{ fmt(totalQty) }}</b> 盒</span>
-          <el-tag v-if="incompleteCount > 0" type="warning" size="small">
-            {{ incompleteCount }} 个非完整月
-          </el-tag>
+          <span class="meta-days">共 {{ days.length }} 天</span>
+          <span class="meta-avg">日均 {{ fmt(avgQty) }} 盒</span>
         </div>
 
-        <!-- 折线图 -->
+        <!-- 细柱状图：柱子很细，整体形成趋势轮廓；鼠标悬停看数值 -->
         <div ref="chartEl" class="trend-chart"></div>
 
-        <!-- 月度明细 -->
-        <el-table :data="months" border stripe size="small" max-height="240">
-          <el-table-column prop="month" label="月份" width="110" align="center" />
+        <!-- 每日明细 -->
+        <el-table :data="days" border stripe size="small" height="240">
+          <el-table-column prop="date" label="日期" width="130" align="center" />
           <el-table-column label="实销盒数" align="right">
             <template #default="{ row }">
               <span class="qty-strong">{{ fmt(row.qty) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="完整性" width="110" align="center">
-            <template #default="{ row }">
-              <el-tag v-if="row.complete" type="success" size="small">完整月</el-tag>
-              <el-tag v-else type="warning" size="small">非完整月</el-tag>
-            </template>
-          </el-table-column>
         </el-table>
-
-        <div v-if="incompleteCount > 0" class="incomplete-tip">
-          <el-icon><InfoFilled /></el-icon>
-          <span>
-            带 * 的月份为「非完整月」：查询区间的{{ incompleteHint }}未覆盖该自然月整月，
-            其盒数仅反映区间内的部分数据，对比时请留意。
-          </span>
-        </div>
       </template>
 
       <div v-else-if="!loading" class="trend-empty">
@@ -56,7 +41,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, DataAnalysis } from '@element-plus/icons-vue'
+import { DataAnalysis } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { fetchStoreAbilityTrend, type StoreAbilityTrendPoint } from '@/api/client'
 import { logger } from '@/utils/logger'
@@ -81,23 +66,14 @@ const visible = computed({
 })
 
 const loading = ref(false)
-const months = ref<StoreAbilityTrendPoint[]>([])
+const days = ref<StoreAbilityTrendPoint[]>([])
 const chartEl = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 
-const totalQty = computed(() => months.value.reduce((s, m) => s + m.qty, 0))
-const incompleteCount = computed(() => months.value.filter((m) => !m.complete).length)
-
-/** 非完整月的具体提示：只有首/尾可能不完整，按位置给出人话描述 */
-const incompleteHint = computed(() => {
-  if (!incompleteCount.value) return '起止日期'
-  const first = months.value[0]
-  const last = months.value[months.value.length - 1]
-  const parts: string[] = []
-  if (first && !first.complete) parts.push('开始日期')
-  if (last && !last.complete) parts.push('结束日期')
-  return parts.join('或')
-})
+const totalQty = computed(() => days.value.reduce((s, d) => s + d.qty, 0))
+const avgQty = computed(() =>
+  days.value.length ? Math.round(totalQty.value / days.value.length) : 0,
+)
 
 function fmt(v: number): string {
   return v.toLocaleString('zh-CN')
@@ -106,7 +82,7 @@ function fmt(v: number): string {
 async function load() {
   if (!props.storeName || !props.dateFrom || !props.dateTo) return
   loading.value = true
-  months.value = []
+  days.value = []
   try {
     const res = await fetchStoreAbilityTrend(props.dbKey, {
       store_name: props.storeName,
@@ -114,12 +90,12 @@ async function load() {
       date_to: props.dateTo,
       products: props.products || undefined,
     })
-    months.value = res.months
+    days.value = res.days
     await nextTick()
     renderChart()
   } catch (e: any) {
-    ElMessage.error('加载月度趋势失败: ' + e.message)
-    logger.error('门店月度趋势加载失败: ' + e.message, 'StoreTrendDialog')
+    ElMessage.error('加载每日趋势失败: ' + e.message)
+    logger.error('门店每日趋势加载失败: ' + e.message, 'StoreTrendDialog')
   } finally {
     loading.value = false
   }
@@ -135,20 +111,19 @@ function disposeChart() {
 
 function renderChart() {
   disposeChart()
-  if (!chartEl.value || months.value.length === 0) return
+  if (!chartEl.value || days.value.length === 0) return
   chart = echarts.init(chartEl.value)
 
-  // 非完整月在横轴标签上追加 *，与下方提示呼应
-  const categories = months.value.map((m) => (m.complete ? m.month : `${m.month} *`))
-  const completeFlags = months.value.map((m) => m.complete)
+  const categories = days.value.map((d) => d.date)
 
   const option: echarts.EChartsOption = {
     color: ['#3b6bd6'],
     animationDuration: 800,
     animationEasing: 'cubicOut',
     tooltip: {
+      // axis 触发：柱子很细也能稳定命中，鼠标移到该列任意位置即显示
       trigger: 'axis',
-      axisPointer: { type: 'cross' },
+      axisPointer: { type: 'shadow' },
       backgroundColor: 'rgba(255,255,255,0.96)',
       borderColor: '#e4e7ed',
       borderWidth: 1,
@@ -156,16 +131,11 @@ function renderChart() {
       extraCssText: 'box-shadow: 0 4px 16px rgba(0,0,0,0.12); border-radius: 8px;',
       formatter: (params: any) => {
         const p = Array.isArray(params) ? params[0] : params
-        const idx = p.dataIndex as number
-        const flag = completeFlags[idx]
-          ? '<span style="color:#67c23a">完整月</span>'
-          : '<span style="color:#e6a23c">非完整月（区间未覆盖整月）</span>'
-        return `<div style="font-weight:600">${p.name.replace(' *', '')}</div>
-          <div style="margin-top:4px">实销盒数：<b>${(p.value ?? 0).toLocaleString()}</b></div>
-          <div style="margin-top:2px;font-size:12px">${flag}</div>`
+        return `<div style="font-weight:600">${p.name}</div>
+          <div style="margin-top:4px">实销盒数：<b>${(p.value ?? 0).toLocaleString()}</b></div>`
       },
     },
-    grid: { left: 60, right: 28, bottom: 40, top: 30, containLabel: true },
+    grid: { left: 60, right: 24, bottom: 46, top: 24, containLabel: true },
     xAxis: {
       type: 'category',
       data: categories,
@@ -174,7 +144,10 @@ function renderChart() {
       axisLabel: {
         color: '#909399',
         fontSize: 11,
-        rotate: categories.length > 8 ? 35 : 0,
+        // 天数多时自动抽稀 + 旋转，避免标签重叠
+        interval: 'auto',
+        hideOverlap: true,
+        rotate: categories.length > 20 ? 45 : 0,
       },
     },
     yAxis: {
@@ -193,22 +166,15 @@ function renderChart() {
     series: [
       {
         name: '实销盒数',
-        type: 'line',
-        data: months.value.map((m) => m.qty),
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 8,
-        lineStyle: { width: 2.5 },
-        itemStyle: { borderWidth: 2 },
-        emphasis: { focus: 'series', scale: 1.4 },
-        label: {
-          show: true,
-          position: 'top',
-          fontSize: 10,
-          color: '#606266',
-          fontWeight: 600,
-          formatter: (p: any) => (p.value > 0 ? p.value.toLocaleString() : ''),
-        },
+        type: 'bar',
+        data: days.value.map((d) => d.qty),
+        // 核心：柱子做细，点多了整体就是一条趋势轮廓
+        barMinWidth: 1,
+        barMaxWidth: 8,
+        barCategoryGap: '20%',
+        itemStyle: { borderRadius: [2, 2, 0, 0] },
+        emphasis: { focus: 'series' },
+        // 不显示常驻数值标签：靠 tooltip 看值，避免天数多时糊成一片
       },
     ],
   }
@@ -247,6 +213,7 @@ onUnmounted(() => {
 .trend-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 16px;
   font-size: 13px;
   color: #606266;
@@ -254,6 +221,11 @@ onUnmounted(() => {
 
 .meta-total b {
   color: #303133;
+  font-variant-numeric: tabular-nums;
+}
+
+.meta-days,
+.meta-avg {
   font-variant-numeric: tabular-nums;
 }
 
@@ -266,22 +238,6 @@ onUnmounted(() => {
 .qty-strong {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.incomplete-tip {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 12px;
-  background: #fff7ed;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #b45309;
-  line-height: 1.5;
-}
-
-.incomplete-tip .el-icon {
-  margin-top: 2px;
 }
 
 .trend-empty {

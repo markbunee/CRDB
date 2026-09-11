@@ -93,6 +93,13 @@
         </div>
 
         <div class="filter-group filter-actions">
+          <div class="map-toggle">
+            <el-switch v-model="mapNames" size="small" />
+            <span class="map-toggle-label">品类映射</span>
+            <el-button link type="primary" size="small" @click="mapManagerVisible = true">
+              管理
+            </el-button>
+          </div>
           <el-button type="primary" :loading="loading" @click="handleQuery">
             <el-icon><Search /></el-icon> 生成图表
           </el-button>
@@ -145,11 +152,14 @@
         <p class="empty-desc">选择维度和筛选条件，点击「生成图表」查看趋势分析</p>
       </div>
     </div>
+
+    <!-- 品类映射管理弹窗 -->
+    <ProductMapManager v-model="mapManagerVisible" :db-key="dbKey" @saved="onMapSaved" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Search,
@@ -172,6 +182,8 @@ import {
 import { getCurrentMonthRange } from '@/utils/date'
 import { logger } from '@/utils/logger'
 import { getDbConfig } from '@/utils/dbConfig'
+import { loadMapPref, saveMapPref } from '@/utils/mapPref'
+import ProductMapManager from './ProductMapManager.vue'
 
 const props = defineProps<{
   dbKey: string
@@ -197,6 +209,20 @@ const mergeProducts = ref(false)
 
 const loading = ref(false)
 const tables = ref<BoxCountTable[]>([])
+
+// ---------- 品类映射（四个统计页共用同一份开关偏好） ----------
+const mapNames = ref(loadMapPref())
+const mapManagerVisible = ref(false)
+
+// 切换开关：持久化偏好；已有图表时自动按新口径重查
+watch(mapNames, (v) => {
+  saveMapPref(v)
+  if (chartDataList.value.length > 0) handleQuery()
+})
+
+function onMapSaved() {
+  if (chartDataList.value.length > 0) handleQuery()
+}
 
 // ---------- 图表实例管理 ----------
 const chartInstances: echarts.ECharts[] = []
@@ -512,6 +538,7 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      map_names: mapNames.value,
     })
     tables.value = res.tables
     if (res.tables.length === 0) {
@@ -686,6 +713,19 @@ function handleReset() {
   border-radius: 6px;
   font-size: 12px;
   color: #3b6bd6;
+}
+
+.map-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 2px;
+  white-space: nowrap;
+}
+
+.map-toggle-label {
+  font-size: 12px;
+  color: #606266;
 }
 
 /* ---------- 结果区 ---------- */

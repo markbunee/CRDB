@@ -224,6 +224,8 @@ export function fetchStoreCount(
     products?: string
     merge_cities?: boolean
     merge_products?: boolean
+    /** 品类编码映射为中文名（无映射保持编码） */
+    map_names?: boolean
   } = {},
 ) {
   return request<StoreCountResponse>(`/api/${dbKey}/stats/store_count`, options)
@@ -278,6 +280,8 @@ export function fetchBoxCount(
     merge_cities?: boolean
     merge_products?: boolean
     calc_yoy_mom?: boolean
+    /** 品类编码映射为中文名（无映射保持编码） */
+    map_names?: boolean
   } = {},
 ) {
   return request<BoxCountResponse>(`/api/${dbKey}/stats/box_count`, options)
@@ -325,6 +329,7 @@ export function exportStoreCount(
     products?: string
     merge_cities?: boolean
     merge_products?: boolean
+    map_names?: boolean
   } = {},
 ) {
   return _fetchBlob(`/api/${dbKey}/stats/store_count/export`, options)
@@ -344,6 +349,7 @@ export function exportBoxCount(
     merge_cities?: boolean
     merge_products?: boolean
     calc_yoy_mom?: boolean
+    map_names?: boolean
   } = {},
 ) {
   return _fetchBlob(`/api/${dbKey}/stats/box_count/export`, options)
@@ -403,14 +409,12 @@ export function fetchStoreAbilityLatestRange(dbKey: string) {
   )
 }
 
-/** 单门店按月产出趋势：一个自然月一个点 */
+/** 单门店按天产出趋势：一天一个点 */
 export interface StoreAbilityTrendPoint {
-  /** YYYY-MM */
-  month: string
-  /** 该月实销盒数（区间内无销量补 0） */
+  /** YYYY-MM-DD */
+  date: string
+  /** 当日实销盒数（无销量补 0） */
   qty: number
-  /** 是否完整月：查询区间起止完全覆盖该自然月；一般只有首尾月可能为 false */
-  complete: boolean
 }
 
 export interface StoreAbilityTrendResponse {
@@ -418,7 +422,7 @@ export interface StoreAbilityTrendResponse {
   store_name: string
   date_from: string
   date_to: string
-  months: StoreAbilityTrendPoint[]
+  days: StoreAbilityTrendPoint[]
 }
 
 export function fetchStoreAbilityTrend(
@@ -447,6 +451,8 @@ export function fetchStoreAbility(
     /** 门店名称关键词，英文逗号分隔，模糊匹配；留空 = 全部门店 */
     stores?: string
     top_n?: number
+    /** 品类显示映射表中文名（无映射回落商品名称） */
+    map_names?: boolean
   } = {},
 ) {
   return request<StoreAbilityResponse>(`/api/${dbKey}/stats/store_ability`, options)
@@ -460,7 +466,38 @@ export function exportStoreAbility(
     products?: string
     stores?: string
     top_n?: number
+    map_names?: boolean
   } = {},
 ) {
   return _fetchBlob(`/api/${dbKey}/stats/store_ability/export`, options)
+}
+
+// ---------- 商品编码 → 品类中文名 映射管理 ----------
+
+export interface ProductMapItem {
+  code: string
+  name: string
+}
+
+export interface ProductMapResponse {
+  db_key: string
+  count: number
+  items: ProductMapItem[]
+}
+
+export function fetchProductMap(dbKey: string) {
+  return request<ProductMapResponse>(`/api/product-map/${dbKey}`)
+}
+
+/** 全量保存映射（后端整体替换该库的映射表） */
+export function saveProductMap(dbKey: string, items: ProductMapItem[]) {
+  return request<ProductMapResponse>(`/api/product-map/${dbKey}`, { items }, 'POST')
+}
+
+export function deleteProductCode(dbKey: string, code: string) {
+  return request<{ db_key: string; deleted: string }>(
+    `/api/product-map/${dbKey}/${encodeURIComponent(code)}`,
+    undefined,
+    'DELETE',
+  )
 }

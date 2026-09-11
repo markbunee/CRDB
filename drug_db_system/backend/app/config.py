@@ -35,6 +35,9 @@ PROJECT_DIR = os.path.dirname(BACKEND_DIR)                                  # dr
 ROOT_DIR = os.path.dirname(PROJECT_DIR)                                     # CRDB/（Excel 所在）
 FRONTEND_DIR = os.path.join(PROJECT_DIR, "frontend")
 
+# 后端自有数据目录（商品编码→品类名映射等 JSON 持久化文件）
+DATA_DIR = os.path.join(BACKEND_DIR, "data")
+
 # Excel 源数据目录：默认项目根 CRDB/（与 drug_db_system 同级），可用环境变量覆盖
 EXCEL_DIR = os.environ.get("EXCEL_DIR", ROOT_DIR)
 
