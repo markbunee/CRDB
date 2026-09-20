@@ -51,26 +51,27 @@
               <el-radio-button label="city">{{ dbConfig?.region_label || '城市' }}</el-radio-button>
               <el-radio-button v-if="hasProvince" label="province">省份</el-radio-button>
             </el-radio-group>
-            <el-input
+            <KeywordSelect
               v-if="regionLevel === 'city'"
               v-model="cities"
-              placeholder="广州市,佛山市,汕头市"
-              clearable
-              size="default"
-              style="width: 220px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="city"
+              placeholder="输入城市关键词，如 广州"
+              width="220px"
             />
-            <el-input
+            <KeywordSelect
               v-else
               v-model="provinces"
-              placeholder="广东省,广西壮族自治区,湖南省"
-              clearable
-              size="default"
-              style="width: 220px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="province"
+              placeholder="输入省份关键词，如 广东"
+              width="220px"
             />
             <el-checkbox v-model="mergeCities" class="merge-checkbox" @change="onMergeChange">
-              合并城市
+              合并{{ regionLabel }}
+            </el-checkbox>
+            <el-checkbox v-if="regionLevel === 'province' && hasProvince" v-model="mergeProvinceCities" class="merge-checkbox" @change="onMergeChange">
+              合并省份内的城市
             </el-checkbox>
           </div>
         </div>
@@ -78,17 +79,27 @@
         <div class="filter-group">
           <label class="filter-label">品类（商品编码）</label>
           <div class="filter-inline">
-            <el-input
+            <KeywordSelect
               v-model="products"
-              placeholder="1058746,1086127,1091138"
-              clearable
-              size="default"
-              style="width: 280px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="product"
+              placeholder="输入编码或名称关键词"
+              width="280px"
             />
             <el-checkbox v-model="mergeProducts" class="merge-checkbox" @change="onMergeChange">
               合并品类
             </el-checkbox>
+          </div>
+        </div>
+
+        <div v-if="supportsStoreType" class="filter-group">
+          <label class="filter-label">门店类型</label>
+          <div class="filter-inline">
+            <el-radio-group v-model="storeType" size="small" @change="onStoreTypeChange">
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="chain">连锁</el-radio-button>
+              <el-radio-button value="franchise">加盟</el-radio-button>
+            </el-radio-group>
           </div>
         </div>
 
@@ -180,16 +191,22 @@ import {
   type DbMeta,
 } from '@/api/client'
 import { getCurrentMonthRange } from '@/utils/date'
+import { fetchStatsLatestRange } from '@/api/client'
 import { logger } from '@/utils/logger'
 import { getDbConfig } from '@/utils/dbConfig'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
+import KeywordSelect from '../KeywordSelect.vue'
 
 const props = defineProps<{
   dbKey: string
 }>()
 
-const { start: defaultStart, end: defaultEnd } = getCurrentMonthRange()
+// 默认区间：优先对齐「数据最新月份」（数据常滞后于系统当月，用系统当月会查出空区间，
+// 同比/环比随之失真）。取不到时回退系统当月。
+const { start: monthStart, end: monthEnd } = getCurrentMonthRange()
+const defaultStart = ref(monthStart)
+const defaultEnd = ref(monthEnd)
 
 const dimensions = [
   { key: 'city' as StoreCountDimension, name: '城市维度', desc: '折线图 · 品类趋势按月', icon: Location },
@@ -199,13 +216,16 @@ const dimensions = [
 
 const dimension = ref<StoreCountDimension>('city')
 const regionLevel = ref<StoreCountRegion>('city')
-const dateRange = ref<[string, string]>([defaultStart, defaultEnd])
+const dateRange = ref<[string, string]>([defaultStart.value, defaultEnd.value])
 const cities = ref('')
 const provinces = ref('')
 const products = ref('')
 const mergeMonths = ref(false)
 const mergeCities = ref(false)
 const mergeProducts = ref(false)
+const mergeProvinceCities = ref(false)
+// 门店类型筛选（连锁/加盟/全部），仅支持该维度的库（如大参林）显示
+const storeType = ref<'all' | 'chain' | 'franchise'>('all')
 
 const loading = ref(false)
 const tables = ref<BoxCountTable[]>([])
@@ -272,13 +292,31 @@ const hasProvince = computed(() => dbConfig.value?.region_levels?.includes('prov
 
 onMounted(async () => {
   dbConfig.value = await getDbConfig(props.dbKey)
+  await applyLatestRange()
 })
+
+/** 把默认区间对齐到库里「数据最新月份」 */
+async function applyLatestRange() {
+  try {
+    const r = await fetchStatsLatestRange(props.dbKey)
+    if (r?.date_from && r?.date_to) {
+      defaultStart.value = r.date_from
+      defaultEnd.value = r.date_to
+      dateRange.value = [r.date_from, r.date_to]
+    }
+  } catch (e: any) {
+    logger.warn('取数据最新月份失败，回退系统当月: ' + e.message, 'SalesTrendStats')
+  }
+}
+
+watch(() => props.dbKey, applyLatestRange)
 
 const hintText = computed(() => {
   const d = dimension.value
   const mergeHints: string[] = []
   if (mergeMonths.value) mergeHints.push('时间')
   if (mergeCities.value) mergeHints.push(regionLabel.value)
+  if (mergeProvinceCities.value) mergeHints.push('省内城市')
   if (mergeProducts.value) mergeHints.push('品类')
   const mergeStr = mergeHints.length ? `（已合并：${mergeHints.join('、')}）` : ''
   if (d === 'city') {
@@ -518,6 +556,10 @@ function onRegionChange() {
   disposeAllCharts()
 }
 
+function onStoreTypeChange() {
+  if (chartDataList.value.length > 0) handleQuery()
+}
+
 function onMergeChange() {
   tables.value = []
   chartDataList.value = []
@@ -538,7 +580,9 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      merge_province_cities: mergeProvinceCities.value,
       map_names: mapNames.value,
+      store_type: storeType.value,
     })
     tables.value = res.tables
     if (res.tables.length === 0) {
@@ -567,10 +611,11 @@ async function handleQuery() {
 function handleReset() {
   dimension.value = 'city'
   regionLevel.value = 'city'
-  dateRange.value = [defaultStart, defaultEnd]
+  dateRange.value = [defaultStart.value, defaultEnd.value]
   mergeMonths.value = false
   mergeCities.value = false
   mergeProducts.value = false
+  mergeProvinceCities.value = false
   cities.value = ''
   provinces.value = ''
   products.value = ''

@@ -3,5 +3,9 @@ uvicorn[standard]==0.30.6
 psycopg2-binary==2.9.9
 pandas==2.2.2
 openpyxl==3.1.5
+xlsxwriter==3.2.0
 python-calamine==0.2.3
 pydantic==2.9.2
+# 登录鉴权：密码哈希（bcrypt）+ JWT
+bcrypt==5.0.0
+PyJWT==2.10.1

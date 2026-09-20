@@ -123,8 +123,9 @@ export EXCEL_DIR=/path/to    # Excel 源数据目录
 ### 导出
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/{db}/export` | 导出全部（JSON，小数据量） |
+| GET | `/api/{db}/export` | 导出全部 CSV（`?format=json` 保留旧 JSON 行为） |
 | GET | `/api/{db}/export/stream` | 流式导出 CSV（大数据量推荐） |
+| GET | `/api/{db}/export/csv` | 按筛选条件导出 CSV（推荐；旧 `/export/excel` 同样返回 CSV） |
 
 ### 统计
 | 方法 | 路径 | 说明 |

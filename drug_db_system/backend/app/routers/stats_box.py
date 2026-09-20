@@ -7,25 +7,20 @@
   SUM(数量)
 维度/地域级别/合并开关/导出与门店数统计保持一致。
 
-导出：GET /stats/box_count/export 返回 xlsx（每个 table 一个 sheet），英文文件名。
+导出：GET /stats/box_count/export 返回 **CSV**（多张子表用首列「分组」区分），英文文件名。
 """
 import calendar
-import io
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2 import sql
 
-from ..dependencies import validate_db_key
+from ..dependencies import validate_db_key, require_admin, require_permission
 from ..models.schema_def import get_cfg, get_field_map, get_region_levels, get_region_label
-from ..services.product_map import get_product_map
+from ..services.product_map import get_product_map, get_product_map_full
+from ..services.csv_export import csv_response, tables_to_csv_text
+from ..services.export_gate import ExportRejected, export_slot
 from ..database import get_conn
 from ..logger import get_logger
 
@@ -33,18 +28,6 @@ router = APIRouter(prefix="/api/{db_key}", tags=["stats-box"])
 logger = get_logger("app.routers.stats_box")
 
 DIMENSIONS = ("city", "product", "time")
-
-# ---------- Excel 样式 ----------
-HEADER_FILL = PatternFill(start_color="3B6BD6", end_color="3B6BD6", fill_type="solid")
-HEADER_FONT = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
-CELL_FONT = Font(name="Microsoft YaHei", size=10)
-HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-THIN_BORDER = Border(
-    left=Side(style="thin", color="D0D5DD"),
-    right=Side(style="thin", color="D0D5DD"),
-    top=Side(style="thin", color="D0D5DD"),
-    bottom=Side(style="thin", color="D0D5DD"),
-)
 
 
 def _parse_list(val: Optional[str]) -> List[str]:
@@ -104,13 +87,28 @@ def _safe_sort(vals: list) -> list:
         return sorted(vals, key=lambda v: (v is None, str(v)))
 
 
+def _store_type_expr(cfg: dict) -> Optional[sql.Composable]:
+    """返回连锁/加盟的 CASE 表达式（仅含 大区/营运区 的库支持，大参林满足）。
+
+    与看板 dashboard._store_type_expr 同口径：大区或营运区字段含「加盟」二字即加盟，否则连锁。
+    """
+    if any(c[0] == "大区" for c in cfg["columns"]) and any(c[0] == "营运区" for c in cfg["columns"]):
+        return sql.SQL(
+            "CASE WHEN {daqu} LIKE '%%加盟%%' OR {yingyun} LIKE '%%加盟%%' "
+            "THEN '加盟' ELSE '连锁' END"
+        ).format(daqu=sql.Identifier("大区"), yingyun=sql.Identifier("营运区"))
+    return None
+
+
 def _build_where(
     fm: Dict[str, str],
+    cfg: dict,
     date_from: Optional[str],
     date_to: Optional[str],
     product_list: List[str],
     region_col: str,
     region_list: List[str],
+    store_type: str = "all",
 ):
     conditions: List[sql.Composable] = []
     params: list = []
@@ -136,6 +134,12 @@ def _build_where(
         )
         params.extend(region_list)
 
+    st_expr = _store_type_expr(cfg)
+    if st_expr is not None and store_type in ("chain", "franchise"):
+        label = "连锁" if store_type == "chain" else "加盟"
+        conditions.append(sql.SQL("({}) = %s").format(st_expr))
+        params.append(label)
+
     where = sql.SQL("")
     if conditions:
         where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
@@ -152,11 +156,16 @@ def _make_title(
     region_name: str,
 ) -> str:
     if merge_split or split_label is None:
+        if split_name == "省份":
+            return "全部省份（合并）"
         if dimension == "city":
             return f"全部{region_name}（合并）"
         if dimension == "product":
             return "全部品类（合并）"
         return f"全部月份（合并）· {_range_label(date_from, date_to)}"
+    if split_name == "省份":
+        # 省份展开：子表名直接用省名（导出时即 Excel sheet 名），不再加「省份: 」前缀
+        return f"{split_label}"
     return f"{split_name}: {split_label}"
 
 
@@ -172,12 +181,20 @@ def _run_box_count(
     products: Optional[str],
     merge_cities: bool,
     merge_products: bool,
+    merge_province_cities: bool = False,
     map_names: bool = False,
+    store_type: str = "all",
+    metric: str = "boxes",
 ) -> dict:
-    """盒数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。
+    """盒数/金额统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。
 
     map_names=True 时把品类编码翻译成映射表中文名（无映射保持编码），
     JSON 与导出共用本函数，因此两者的口径天然一致。
+
+    metric="amount" 时为实销金额口径：SUM(数量 × 品类开票价)，
+    开票价来自品类映射表（backend/data/product_map.json），未配置价格的品类按 0 计
+    （即不计入金额）。SQL 里把映射做成 VALUES 常量集 JOIN，单次聚合完成；
+    列名仍复用 box_count 别名，下游透视/导出零改动。
     """
     fm = get_field_map(db_key)
     if not fm:
@@ -204,82 +221,122 @@ def _run_box_count(
 
     product_list = _parse_list(products)
 
-    if dimension == "city":
+    # 省份模式：
+    # - 默认（合并省份未勾选）按「省份展开」：每个省份一张子表，表内 行=城市、列=品类，月份按整段区间合并；
+    # - 勾选「合并省份」(merge_cities)：跨省份合并为一张总表；
+    # - 勾选「合并省份内的城市」(merge_province_cities)：每省内城市折叠成一个整省合计（一省一行）。
+    province_mode = region_level == "province" and "province_col" in fm
+    province_expanded = province_mode
+
+    if province_mode:
+        split_col = fm["province_col"]
+        row_col = fm["city_col"]
+        col_col = fm["product_col"]
+        split_name, row_name, col_name = "省份", region_label, "品类"
+        merge_split = merge_cities         # 合并省份：跨省份合并为单表
+        merge_row = merge_province_cities  # 合并省份内的城市：折叠成整省合计
+        merge_col = merge_products         # 合并品类
+    elif dimension == "city":
         split_col = region_col
         row_col = fm["product_col"]
         col_col = fm["month_col"]
         merge_split = merge_cities
+        merge_row = merge_products
+        merge_col = merge_months
         split_name, row_name, col_name = region_name, "品类", "月份"
     elif dimension == "product":
         split_col = fm["product_col"]
         row_col = region_col
         col_col = fm["month_col"]
         merge_split = merge_products
+        merge_row = merge_cities
+        merge_col = merge_months
         split_name, row_name, col_name = "品类", region_name, "月份"
     else:
         split_col = fm["month_col"]
         row_col = region_col
         col_col = fm["product_col"]
         merge_split = merge_months
+        merge_row = merge_cities
+        merge_col = merge_products
         split_name, row_name, col_name = "月份", region_name, "品类"
 
     month_col = fm["month_col"]
 
-    # 根据当前维度，确定 split/row/col 分别由哪个 merge 参数控制
-    if dimension == "city":
-        merge_for: Dict[str, bool] = {
-            split_col: merge_cities,
-            row_col: merge_products,
-            col_col: merge_months,
-        }
-    elif dimension == "product":
-        merge_for = {
-            split_col: merge_products,
-            row_col: merge_cities,
-            col_col: merge_months,
-        }
-    else:
-        merge_for = {
-            split_col: merge_months,
-            row_col: merge_cities,
-            col_col: merge_products,
-        }
+    # 省份模式下月份恒合并（不进表）；其余维度月份按 merge_months 控制
+    merge_for: Dict[str, bool] = {
+        split_col: merge_split,
+        row_col: merge_row,
+        col_col: merge_col,
+    }
+    if not province_mode:
+        merge_for[month_col] = merge_months
 
     group_cols: List[sql.Identifier] = []
     for col, merge_flag in merge_for.items():
         if col and not merge_flag:
             group_cols.append(sql.Identifier(col))
 
-    where, params = _build_where(fm, date_from, date_to, product_list, region_col, region_list)
+    where, params = _build_where(fm, cfg, date_from, date_to, product_list, region_col, region_list, store_type)
 
-    fields = list(group_cols) + [
-        sql.SQL("COALESCE(SUM({}), 0) AS box_count").format(
-            sql.Identifier(fm["qty_col"])
+    # 聚合表达式 + 可选的「开票价」JOIN（仅金额口径需要）
+    agg_expr = sql.SQL("COALESCE(SUM({}), 0) AS box_count").format(
+        sql.Identifier(fm["qty_col"])
+    )
+    join_sql = sql.SQL("")
+    exec_params: list = list(params)
+    if metric == "amount":
+        full_map = get_product_map_full(db_key)
+        pvals = [
+            (code, float(v["price"]))
+            for code, v in full_map.items()
+            if v.get("price") is not None
+        ]
+        if not pvals:
+            raise HTTPException(
+                400, "当前库尚未配置品类开票价，无法统计实销金额（请在「品类映射表」中维护）"
+            )
+        join_sql = sql.SQL(
+            "LEFT JOIN (VALUES {}) AS p(code, price) ON CAST({}.{} AS TEXT) = p.code"
+        ).format(
+            sql.SQL(", ").join(
+                sql.SQL("(%s::TEXT, %s::NUMERIC)") for _ in pvals
+            ),
+            sql.Identifier(table),
+            sql.Identifier(fm["product_col"]),
         )
-    ]
+        # JOIN 条件里的占位符在 SQL 文本中先于 WHERE 出现，参数顺序必须与之对应
+        exec_params = [x for pair in pvals for x in pair] + list(params)
+        agg_expr = sql.SQL(
+            "COALESCE(SUM({} * COALESCE(p.price, 0)), 0) AS box_count"
+        ).format(sql.Identifier(fm["qty_col"]))
+
+    fields = list(group_cols) + [agg_expr]
     if group_cols:
         stmt = sql.SQL(
-            "SELECT {fields} FROM {table}{where} GROUP BY {group} ORDER BY {order}"
+            "SELECT {fields} FROM {table}{join}{where} GROUP BY {group} ORDER BY {order}"
         ).format(
             fields=sql.SQL(", ").join(fields),
             table=sql.Identifier(table),
+            join=join_sql,
             where=where,
             group=sql.SQL(", ").join(group_cols),
             order=sql.SQL(", ").join(group_cols),
         )
     else:
         stmt = sql.SQL(
-            "SELECT {fields} FROM {table}{where}"
+            "SELECT {fields} FROM {table}{join}{where}"
         ).format(
             fields=sql.SQL(", ").join(fields),
             table=sql.Identifier(table),
+            join=join_sql,
             where=where,
         )
 
     try:
         with get_conn(db_key) as conn:
             with conn.cursor() as cur:
-                cur.execute(stmt, params)
+                cur.execute(stmt, exec_params)
                 colnames = [d[0] for d in cur.description]
                 raw_rows = [dict(zip(colnames, r)) for r in cur.fetchall()]
     except Exception as e:
@@ -307,11 +364,14 @@ def _run_box_count(
 
     return {
         "tables": tables,
+        "metric": metric,
+        "province_expanded": province_expanded,
         "dimension": dimension,
         "region_level": region_level,
         "merge_months": merge_months,
         "merge_cities": merge_cities,
         "merge_products": merge_products,
+        "merge_province_cities": merge_province_cities,
         "total_raw_rows": len(raw_rows),
     }
 
@@ -389,7 +449,10 @@ def _compute_yoy_mom(
     products: Optional[str],
     merge_cities: bool,
     merge_products: bool,
+    merge_province_cities: bool = False,
     map_names: bool = False,
+    store_type: str = "all",
+    metric: str = "boxes",
 ) -> dict:
     """计算当前期 + 同比(去年同期) + 环比(上个月)，合并到结果中。"""
     if not date_from or not date_to:
@@ -409,15 +472,15 @@ def _compute_yoy_mom(
     # 三期都要传 map_names：编码->中文名在各期保持一致，同比环比的行/列匹配才不会错位
     curr = _run_box_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
+        cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type, metric,
     )
     yoy = _run_box_count(
         db_key, dimension, region_level, yoy_from, yoy_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
+        cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type, metric,
     )
     mom = _run_box_count(
         db_key, dimension, region_level, mom_from, mom_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
+        cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type, metric,
     )
 
     # 构建查找索引: split_value -> row_key -> total
@@ -592,73 +655,9 @@ def _pivot(
     return tables
 
 
-# ---------- Excel 导出 ----------
-
-def _safe_sheet_name(title: str, idx: int) -> str:
-    name = re.sub(r'[:\\/\?\*\[\]]', "_", str(title)).strip()
-    if not name:
-        name = f"sheet{idx + 1}"
-    if len(name) > 31:
-        name = name[:31]
-    return name
-
-
-def _tables_to_xlsx(tables: List[dict], calc_yoy_mom: bool = False) -> io.BytesIO:
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    for i, t in enumerate(tables):
-        ws = wb.create_sheet(title=_safe_sheet_name(t.get("title") or f"sheet{i+1}", i))
-        col_keys = list(t.get("col_keys", []))
-        row_keys = list(t.get("row_keys", []))
-        rows = t.get("rows", [])
-
-        header = [t.get("row_header", "")] + col_keys
-        if calc_yoy_mom:
-            header += ["合计", "同期合计", "同比(%)", "上月合计", "环比(%)"]
-        ws.append(header)
-        for c in range(1, len(header) + 1):
-            cell = ws.cell(row=1, column=c)
-            cell.fill = HEADER_FILL
-            cell.font = HEADER_FONT
-            cell.alignment = HEADER_ALIGN
-            cell.border = THIN_BORDER
-        ws.freeze_panes = "A2"
-
-        for row in rows:
-            line = [row.get("row_key", "")]
-            cells = row.get("cells", {})
-            for ck in col_keys:
-                v = cells.get(ck, 0)
-                line.append(v if v is not None else 0)
-            if calc_yoy_mom:
-                line.append(row.get("total", 0))
-                line.append(row.get("yoy_total", 0))
-                yoy_pct = row.get("yoy_pct")
-                line.append(yoy_pct if yoy_pct is not None else "—")
-                line.append(row.get("mom_total", 0))
-                mom_pct = row.get("mom_pct")
-                line.append(mom_pct if mom_pct is not None else "—")
-            ws.append(line)
-            r = ws.max_row
-            for c in range(1, len(line) + 1):
-                ws.cell(row=r, column=c).font = CELL_FONT
-
-        ws.column_dimensions["A"].width = 18
-        for j in range(len(col_keys)):
-            ws.column_dimensions[get_column_letter(j + 2)].width = 16
-        if calc_yoy_mom:
-            for j in range(5):
-                ws.column_dimensions[get_column_letter(len(col_keys) + 2 + j)].width = 14
-
-    if not wb.worksheets:
-        ws = wb.create_sheet(title="empty")
-        ws.append(["无数据"])
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
+# ---------- CSV 导出 ----------
+# 多张子表拼成一个 CSV：首列「分组」= 原子表标题（原 xlsx 的 sheet 名）；
+# 开启同比环比时表尾追加 合计/同期合计/同比(%)/上月合计/环比(%)。实现见 services/csv_export.py。
 
 
 @router.get("/stats/box_count")
@@ -674,24 +673,30 @@ def box_count(
     products: Optional[str] = Query(None),
     merge_cities: bool = Query(False, description="合并地域维度为单表"),
     merge_products: bool = Query(False, description="合并品类维度为单表"),
+    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
     calc_yoy_mom: bool = Query(False, description="计算同比(去年同期)与环比(上个月)"),
     map_names: bool = Query(False, description="品类编码映射为中文名（无映射保持编码）"),
+    metric: str = Query("boxes", description="boxes=盒数 | amount=实销金额(元)"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
-    """实销盒数统计 — 通用三维度 + 地域级别切换。"""
+    """实销盒数 / 实销金额统计 — 通用三维度 + 地域级别切换。"""
+    if metric not in ("boxes", "amount"):
+        raise HTTPException(400, f"不支持的指标: {metric}，可选: boxes | amount")
     if calc_yoy_mom:
         return _compute_yoy_mom(
             db_key, dimension, region_level, date_from, date_to, merge_months,
-            cities, provinces, products, merge_cities, merge_products, map_names,
+            cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type, metric,
         )
     return _run_box_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
+        cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type, metric,
     )
 
 
 @router.get("/stats/box_count/export")
 def export_box_count(
     db_key: str = validate_db_key,
+    user: dict = Depends(require_permission("export")),
     dimension: str = Query("city", description="统计维度: city | product | time"),
     region_level: str = Query("city", description="地域级别: city | province"),
     date_from: Optional[str] = Query(None),
@@ -702,32 +707,43 @@ def export_box_count(
     products: Optional[str] = Query(None),
     merge_cities: bool = Query(False, description="合并地域维度为单表"),
     merge_products: bool = Query(False, description="合并品类维度为单表"),
+    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
     calc_yoy_mom: bool = Query(False, description="计算同比(去年同期)与环比(上个月)"),
     map_names: bool = Query(False, description="品类编码映射为中文名（与页面口径一致）"),
+    metric: str = Query("boxes", description="boxes=盒数 | amount=实销金额(元)"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
-    """导出盒数统计结果为 xlsx（每个 table 一个 sheet，英文文件名）。"""
-    if calc_yoy_mom:
-        result = _compute_yoy_mom(
-            db_key, dimension, region_level, date_from, date_to, merge_months,
-            cities, provinces, products, merge_cities, merge_products, map_names,
-        )
-    else:
-        result = _run_box_count(
-            db_key, dimension, region_level, date_from, date_to, merge_months,
-            cities, provinces, products, merge_cities, merge_products, map_names,
-        )
-    tables = result["tables"]
-    buf = _tables_to_xlsx(tables, calc_yoy_mom=calc_yoy_mom)
+    """导出盒数 / 金额统计结果为 CSV（多张子表用首列「分组」区分，英文文件名）。
+
+    同比环比口径下一共要跑 3 次重聚合（本期/同期/上期），因此更必须走导出闸门：
+    并发满时直接 429，而不是让多个人一起把数据库打满。
+    """
+    if metric not in ("boxes", "amount"):
+        raise HTTPException(400, f"不支持的指标: {metric}，可选: boxes | amount")
+    try:
+        with export_slot(user.get("id"), f"{db_key}/stats/box_count.csv"):
+            if calc_yoy_mom:
+                result = _compute_yoy_mom(
+                    db_key, dimension, region_level, date_from, date_to, merge_months,
+                    cities, provinces, products, merge_cities, merge_products,
+                    merge_province_cities, map_names, store_type, metric,
+                )
+            else:
+                result = _run_box_count(
+                    db_key, dimension, region_level, date_from, date_to, merge_months,
+                    cities, provinces, products, merge_cities, merge_products,
+                    merge_province_cities, map_names, store_type, metric,
+                )
+            tables = result["tables"]
+            text = tables_to_csv_text(tables, calc_yoy_mom=calc_yoy_mom)
+    except ExportRejected as e:
+        raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
 
     suffix = "_yoy_mom" if calc_yoy_mom else ""
-    filename = f"box_count_{dimension}_{region_level}{suffix}.xlsx"
-    encoded = quote(filename)
+    prefix = "sales_amount" if metric == "amount" else "box_count"
+    filename = f"{prefix}_{dimension}_{region_level}{suffix}.csv"
     logger.info(
-        "盒数导出 %s dim=%s region=%s yoy_mom=%s -> %d 表",
+        "盒数导出（CSV）%s dim=%s region=%s yoy_mom=%s -> %d 表",
         db_key, dimension, region_level, calc_yoy_mom, len(tables),
     )
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
+    return csv_response(filename, text)

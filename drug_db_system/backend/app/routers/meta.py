@@ -6,7 +6,7 @@ from ..config import DB_NAMES
 from ..models.schema_def import (
     SCHEMAS, numeric_columns, date_columns,
     get_field_map, get_filter_map, get_region_levels, get_region_label, supports_stats,
-    supports_store_ability, get_store_ability_city,
+    supports_store_ability, get_store_ability_city, supports_inventory, supports_store_type,
 )
 from ..services.query_builder import count_rows
 
@@ -36,6 +36,9 @@ def list_dbs():
             "supports_stats": supports_stats(key),
             # 门店能力分析是否对该库开放（本期仅大参林·广州）
             "supports_store_ability": supports_store_ability(key),
+            "supports_store_type": supports_store_type(key),
             "store_ability_city": get_store_ability_city(),
+            # 门店库存是否对该库开放（本期仅大参林）
+            "supports_inventory": supports_inventory(key),
         })
     return result

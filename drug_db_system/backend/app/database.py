@@ -12,7 +12,7 @@ import psycopg2
 from psycopg2 import pool
 
 from .config import (
-    PG_HOST, PG_PORT, PG_USER, PG_PASSWORD,
+    PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_ADMIN_DB,
     POOL_MIN, POOL_MAX, DB_NAMES, conn_params,
 )
 
@@ -74,6 +74,36 @@ class DatabasePools:
                 pass
             p.putconn(conn)
 
+    def acquire(self, db_key: str):
+        """借出一个**原始**连接（不带 readonly/autocommit 约束）。
+
+        仅用于导出这类「连接生命周期由调用方控制」的场景：
+        流式响应的生成器活得比请求函数长，且命名服务端游标必须跑在显式事务里，
+        与 ``get_conn``（只读 + autocommit + with 语句归还）的语义不同。
+        借出后必须调用 ``release()`` 归还。
+        """
+        return self._get_or_create(db_key).getconn()
+
+    def release(self, db_key: str, conn) -> None:
+        """归还 acquire() 借出的连接，恢复默认会话状态，出错则丢弃该连接。"""
+        p = self._pools.get(db_key)
+        if p is None or conn is None:
+            return
+        try:
+            if not conn.closed:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                conn.set_session(readonly=False)
+                conn.autocommit = True
+            p.putconn(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     def closeall(self):
         """关闭所有连接池（进程退出时调用）。"""
         with self._lock:
@@ -115,3 +145,40 @@ def direct_conn(db_name: str):
         yield conn
     finally:
         conn.close()
+
+
+# ---------- 认证库（用户表 / 申请表）----------
+# 用户体系与三个业务库解耦，统一放在 PG_ADMIN_DB（默认 postgres）里，
+# 避免业务数据被清空时把账号一起清掉。
+_auth_pool = None
+_auth_lock = threading.Lock()
+
+
+def _get_auth_pool():
+    global _auth_pool
+    if _auth_pool is None:
+        with _auth_lock:
+            if _auth_pool is None:
+                _auth_pool = pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=5,
+                    host=PG_HOST, port=PG_PORT, user=PG_USER,
+                    password=PG_PASSWORD, dbname=PG_ADMIN_DB,
+                )
+    return _auth_pool
+
+
+@contextlib.contextmanager
+def auth_conn(autocommit: bool = True):
+    """获取认证库连接（带连接池），用于用户表/申请表读写。"""
+    p = _get_auth_pool()
+    conn = p.getconn()
+    old = conn.autocommit
+    conn.autocommit = autocommit
+    try:
+        yield conn
+    finally:
+        try:
+            conn.autocommit = old
+        except Exception:
+            pass
+        p.putconn(conn)

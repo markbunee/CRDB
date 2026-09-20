@@ -54,23 +54,21 @@
               <el-radio-button label="city">{{ dbConfig?.region_label || '城市' }}</el-radio-button>
               <el-radio-button v-if="hasProvince" label="province">省份</el-radio-button>
             </el-radio-group>
-            <el-input
+            <KeywordSelect
               v-if="regionLevel === 'city'"
               v-model="cities"
-              placeholder="广州市,佛山市,汕头市"
-              clearable
-              size="default"
-              style="width: 220px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="city"
+              placeholder="输入城市关键词，如 广州"
+              width="220px"
             />
-            <el-input
+            <KeywordSelect
               v-else
               v-model="provinces"
-              placeholder="广东省,广西壮族自治区,湖南省"
-              clearable
-              size="default"
-              style="width: 220px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="province"
+              placeholder="输入省份关键词，如 广东"
+              width="220px"
             />
             <el-checkbox
               v-model="mergeCities"
@@ -78,19 +76,25 @@
             >
               合并{{ regionLabel }}
             </el-checkbox>
+            <el-checkbox
+              v-if="provinceExpanded"
+              v-model="mergeProvinceCities"
+              class="merge-checkbox"
+            >
+              合并省份内的城市
+            </el-checkbox>
           </div>
         </div>
 
         <div class="filter-group">
           <label class="filter-label">品类（商品编码）</label>
           <div class="filter-inline">
-            <el-input
+            <KeywordSelect
               v-model="products"
-              placeholder="1058746,1086127,1091138"
-              clearable
-              size="default"
-              style="width: 280px"
-              @keyup.enter="handleQuery"
+              :db-key="dbKey"
+              field="product"
+              placeholder="输入编码或名称关键词"
+              width="280px"
             />
             <el-checkbox
               v-model="mergeProducts"
@@ -98,6 +102,17 @@
             >
               合并品类
             </el-checkbox>
+          </div>
+        </div>
+
+        <div v-if="supportsStoreType" class="filter-group">
+          <label class="filter-label">门店类型</label>
+          <div class="filter-inline">
+            <el-radio-group v-model="storeType" size="small" @change="onStoreTypeChange">
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="chain">连锁</el-radio-button>
+              <el-radio-button value="franchise">加盟</el-radio-button>
+            </el-radio-group>
           </div>
         </div>
 
@@ -116,7 +131,7 @@
             <el-icon><RefreshRight /></el-icon> 重置
           </el-button>
           <el-button type="success" :loading="exporting" @click="handleExport">
-            <el-icon><Download /></el-icon> 导出Excel
+            <el-icon><Download /></el-icon> 导出CSV
           </el-button>
         </div>
       </div>
@@ -174,10 +189,10 @@
                       {{ c }}
                     </th>
                     <template v-if="calcYoyMom">
-                      <th class="total-header">合计(盒)</th>
-                      <th class="yoy-header">同期合计(盒)</th>
+                      <th class="total-header">{{ isAmount ? '合计(万元)' : '合计(盒)' }}</th>
+                      <th class="yoy-header">{{ isAmount ? '同期合计(万元)' : '同期合计(盒)' }}</th>
                       <th class="yoy-header">同比(%)</th>
-                      <th class="mom-header">上月合计(盒)</th>
+                      <th class="mom-header">{{ isAmount ? '上月合计(万元)' : '上月合计(盒)' }}</th>
                       <th class="mom-header">环比(%)</th>
                     </template>
                   </tr>
@@ -191,13 +206,13 @@
                       class="count-cell"
                       :class="countClass(row.cells[c])"
                     >
-                      {{ row.cells[c] ?? 0 }}
+                      {{ fmtCell(row.cells[c]) }}
                     </td>
                     <template v-if="calcYoyMom">
-                      <td class="total-cell">{{ row.total ?? 0 }}</td>
-                      <td class="total-cell">{{ row.yoy_total ?? 0 }}</td>
+                      <td class="total-cell">{{ fmtCell(row.total) }}</td>
+                      <td class="total-cell">{{ fmtCell(row.yoy_total) }}</td>
                       <td class="pct-cell" :class="pctClass(row.yoy_pct)">{{ fmtPct(row.yoy_pct) }}</td>
-                      <td class="total-cell">{{ row.mom_total ?? 0 }}</td>
+                      <td class="total-cell">{{ fmtCell(row.mom_total) }}</td>
                       <td class="pct-cell" :class="pctClass(row.mom_pct)">{{ fmtPct(row.mom_pct) }}</td>
                     </template>
                   </tr>
@@ -209,7 +224,7 @@
       </template>
       <div v-else-if="!loading" class="empty-state">
         <el-icon class="empty-icon"><Box /></el-icon>
-        <p>点击「统计」按钮查看实销盒数统计结果</p>
+        <p>点击「统计」按钮查看实销{{ isAmount ? '金额' : '盒数' }}统计结果</p>
       </div>
     </div>
 
@@ -235,22 +250,37 @@ import {
   fetchBoxCount,
   exportBoxCount,
   downloadBlob,
+  DOWNLOAD_DISABLED,
   type BoxCountTable,
   type StoreCountDimension,
   type StoreCountRegion,
   type DbMeta,
 } from '@/api/client'
 import { getCurrentMonthRange } from '@/utils/date'
+import { fetchStatsLatestRange } from '@/api/client'
+import { requireAdmin, requirePermission } from '@/utils/auth'
 import { logger } from '@/utils/logger'
 import { getDbConfig } from '@/utils/dbConfig'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
+import KeywordSelect from '../KeywordSelect.vue'
 
-const props = defineProps<{
-  dbKey: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    dbKey: string
+    /** boxes=实销盒数；amount=实销金额（盒数×开票价，以万元、1 位小数展示） */
+    mode?: 'boxes' | 'amount'
+  }>(),
+  { mode: 'boxes' },
+)
 
-const { start: defaultStart, end: defaultEnd } = getCurrentMonthRange()
+const isAmount = computed(() => props.mode === 'amount')
+
+// 默认区间：优先对齐「数据最新月份」（数据常滞后于系统当月，用系统当月会查出空区间，
+// 同比/环比随之失真）。取不到时回退系统当月。
+const { start: monthStart, end: monthEnd } = getCurrentMonthRange()
+const defaultStart = ref(monthStart)
+const defaultEnd = ref(monthEnd)
 
 const dimensions = [
   { key: 'city' as StoreCountDimension, name: '城市维度', desc: '按城市/省份拆分 · 品类×月份', icon: Location },
@@ -260,13 +290,14 @@ const dimensions = [
 
 const dimension = ref<StoreCountDimension>('city')
 const regionLevel = ref<StoreCountRegion>('city')
-const dateRange = ref<[string, string]>([defaultStart, defaultEnd])
+const dateRange = ref<[string, string]>([defaultStart.value, defaultEnd.value])
 const mergeMonths = ref(false)
 const cities = ref('')
 const provinces = ref('')
 const products = ref('')
 const mergeCities = ref(false)
 const mergeProducts = ref(false)
+const mergeProvinceCities = ref(false)
 
 const tables = ref<BoxCountTable[]>([])
 const loading = ref(false)
@@ -295,13 +326,36 @@ const regionLabel = computed(() =>
 
 const dbConfig = ref<DbMeta | null>(null)
 const hasProvince = computed(() => dbConfig.value?.region_levels?.includes('province') ?? true)
+const supportsStoreType = computed(() => !!dbConfig.value?.supports_store_type)
 
 onMounted(async () => {
   dbConfig.value = await getDbConfig(props.dbKey)
+  await applyLatestRange()
 })
+
+/** 把默认区间对齐到库里「数据最新月份」 */
+async function applyLatestRange() {
+  try {
+    const r = await fetchStatsLatestRange(props.dbKey)
+    if (r?.date_from && r?.date_to) {
+      defaultStart.value = r.date_from
+      defaultEnd.value = r.date_to
+      dateRange.value = [r.date_from, r.date_to]
+    }
+  } catch (e: any) {
+    logger.warn('取数据最新月份失败，回退系统当月: ' + e.message, 'BoxCountStats')
+  }
+}
+
+watch(() => props.dbKey, applyLatestRange)
 
 const mergeMonthsLabel = computed(() =>
   dimension.value === 'time' ? '合并为单表' : '合并月范围',
+)
+
+/** 省份模式：后端按省份展开成多张子表，表内 行=城市、列=品类（月份按整段区间合并） */
+const provinceExpanded = computed(
+  () => regionLevel.value === 'province' && hasProvince.value,
 )
 
 const hintText = computed(() => {
@@ -328,6 +382,16 @@ const hintText = computed(() => {
   if (mergeHints.length) {
     parts.push(`已合并：${mergeHints.join('、')}`)
   }
+  if (isAmount.value) {
+    parts.push('金额=盒数×开票价，以万元展示（未配置开票价的品类不计入）')
+  }
+  if (provinceExpanded.value) {
+    if (mergeProvinceCities.value) {
+      parts.push('每省份内城市已合并为整省合计（一省一行）')
+    } else {
+      parts.push('省份展开：每个省份一张子表，表内 行=城市、列=品类（月份按区间合并）')
+    }
+  }
   return '当前模式：' + parts.join('，')
 })
 
@@ -353,6 +417,10 @@ function onRegionChange() {
   tables.value = []
 }
 
+function onStoreTypeChange() {
+  if (tables.value.length > 0) handleQuery()
+}
+
 async function handleQuery() {
   loading.value = true
   try {
@@ -367,8 +435,10 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      merge_province_cities: mergeProvinceCities.value,
       calc_yoy_mom: calcYoyMom.value,
       map_names: mapNames.value,
+      store_type: storeType.value,
     })
     tables.value = res.tables
     yoyRange.value = res.yoy_range || null
@@ -387,20 +457,24 @@ async function handleQuery() {
 function handleReset() {
   dimension.value = 'city'
   regionLevel.value = 'city'
-  dateRange.value = [defaultStart, defaultEnd]
+  dateRange.value = [defaultStart.value, defaultEnd.value]
   mergeMonths.value = false
   cities.value = ''
   provinces.value = ''
   products.value = ''
   mergeCities.value = false
   mergeProducts.value = false
+  mergeProvinceCities.value = false
   calcYoyMom.value = false
   yoyRange.value = null
   momRange.value = null
+  storeType.value = 'all'
   tables.value = []
 }
 
 async function handleExport() {
+  if (DOWNLOAD_DISABLED) return
+  if (!requirePermission('export', '导出统计数据')) return
   if (tables.value.length === 0) {
     ElMessage.warning('请先执行统计后再导出')
     return
@@ -418,11 +492,15 @@ async function handleExport() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
+      merge_province_cities: mergeProvinceCities.value,
       calc_yoy_mom: calcYoyMom.value,
       map_names: mapNames.value,
+      store_type: storeType.value,
+      metric: props.mode,
     })
     const suffix = calcYoyMom.value ? '_yoy_mom' : ''
-    const filename = `box_count_${dimension.value}_${regionLevel.value}${suffix}.xlsx`
+    const prefix = isAmount.value ? 'sales_amount' : 'box_count'
+    const filename = `${prefix}_${dimension.value}_${regionLevel.value}${suffix}.csv`
     downloadBlob(blob, filename)
     ElMessage.success('导出完成')
   } catch (e: any) {
@@ -433,15 +511,25 @@ async function handleExport() {
   }
 }
 
-function countClass(val: number | undefined): string {
-  if (!val || val === 0) return 'count-zero'
-  if (val < 100) return 'count-low'
-  if (val < 1000) return 'count-mid'
+/** 单元格展示：盒数原样；金额为元，÷10000 转万元并保留 1 位小数 */
+function fmtCell(val: number | null | undefined): string {
+  const v = val ?? 0
+  return isAmount.value ? (v / 10000).toFixed(1) : String(v)
+}
+
+function countClass(val: number | null | undefined): string {
+  const v = isAmount.value ? (val ?? 0) / 10000 : (val ?? 0)
+  if (!v) return 'count-zero'
+  const low = isAmount.value ? 1 : 100
+  const mid = isAmount.value ? 10 : 1000
+  if (v < low) return 'count-low'
+  if (v < mid) return 'count-mid'
   return 'count-high'
 }
 
 function fmtPct(val: number | null | undefined): string {
-  if (val === null || val === undefined) return '—'
+  // 基期为 0（去年同期 / 上月无销量）时无法计算百分比，显示斜杠
+  if (val === null || val === undefined) return '/'
   const sign = val > 0 ? '+' : ''
   return sign + val.toFixed(2) + '%'
 }

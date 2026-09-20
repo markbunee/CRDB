@@ -3,13 +3,14 @@
 
 后续扩展查询功能时，在这里新增路由即可，不影响 rows.py。
 """
+import calendar
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from psycopg2 import sql
 
 from ..dependencies import validate_db_key
-from ..models.schema_def import SCHEMAS, col_names
+from ..models.schema_def import SCHEMAS, col_names, get_cfg, get_field_map
 from ..database import get_conn
 from ..utils.serialization import jsonable_rows
 from ..services.query_builder import build_filter_conditions, build_date_range_condition
@@ -219,3 +220,37 @@ def distinct_values(
         return {"column": column, "values": values}
     except Exception as e:
         raise HTTPException(500, f"查询失败: {e}")
+
+
+@router.get("/stats/latest_range")
+def stats_latest_range(db_key: str = validate_db_key):
+    """返回全库「数据最新月份」的起止日期，供统计各页面默认填充时间范围。
+
+    销售数据通常滞后于当前自然月（现在 9 月、库里只到 8 月），默认区间必须以
+    MAX(日期) 所在月为准 —— 否则默认区间查出来是空的，同比/环比会被算成 -100% 或空值。
+
+    与 /stats/store_ability/latest_range 的区别：本接口不限库，三大 KA 通用；
+    无数据时三个字段均为 null，前端回退到系统当月。
+    """
+    fm = get_field_map(db_key)
+    cfg = get_cfg(db_key)
+    if not fm:
+        raise HTTPException(400, f"该统计功能暂不支持数据库: {db_key}")
+    dcol = sql.Identifier(fm["date_col"])
+    tbl = sql.Identifier(cfg["table"])
+    try:
+        with get_conn(db_key) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql.SQL("SELECT MAX({d}) FROM {t}").format(d=dcol, t=tbl))
+                mx = cur.fetchone()[0]
+    except Exception as e:
+        logger.error("取数据最新月份失败 %s: %s", db_key, e)
+        raise HTTPException(500, f"查询失败: {e}")
+    if not mx:
+        return {"date_from": None, "date_to": None, "max_date": None}
+    last_day = calendar.monthrange(mx.year, mx.month)[1]
+    return {
+        "date_from": f"{mx.year:04d}-{mx.month:02d}-01",
+        "date_to": f"{mx.year:04d}-{mx.month:02d}-{last_day:02d}",
+        "max_date": mx.strftime("%Y-%m-%d"),
+    }

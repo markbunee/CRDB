@@ -15,7 +15,12 @@ NODE_VERSION="v22.23.1"                # Node 版本
 PROJECT_ROOT="/mnt/d/Desktop/Project_Group/CRDB/drug_db_system"
 BACKEND_PORT=8000
 FRONTEND_PORT=5173
-ENABLE_RELOAD=true                     # 后端热重载（/mnt 挂载下若失效改 false）
+# 后端热重载：/mnt（WSL2 DrvFS）挂载或远程机上 watchfiles 递归监视
+# 会因 inotify 限制/内存不足而崩（Cannot allocate memory / os error 12），
+# 直接拖死后端进程。服务端长跑请保持 false。
+# 本地开发确需热重载时，改用 --reload 并限定目录：
+#   uvicorn app.main:app --reload --reload-dir backend/app
+ENABLE_RELOAD=false
 # --------------------------------------------------
 
 # 数据库连接（可用环境变量覆盖）
@@ -64,7 +69,7 @@ free_port "$FRONTEND_PORT"
 
 # ---------- 4. 依赖与目录检查 ----------
 cd "$PROJECT_ROOT" || err "项目目录不存在：$PROJECT_ROOT"
-python -c "import fastapi, uvicorn, psycopg2, pandas, openpyxl, python_calamine" >/dev/null 2>&1 || {
+python -c "import fastapi, uvicorn, psycopg2, pandas, openpyxl, python_calamine, xlsxwriter" >/dev/null 2>&1 || {
     warn "缺少后端依赖，正在安装 backend/requirements.txt ..."
     pip install -r backend/requirements.txt || err "依赖安装失败"
 }

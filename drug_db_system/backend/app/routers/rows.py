@@ -2,13 +2,15 @@
 """数据行 CRUD 接口：/api/{db_key}/rows。"""
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from psycopg2 import sql
 
 from ..database import get_conn
-from ..dependencies import validate_db_key
+from ..dependencies import validate_db_key, require_admin
 from ..logger import get_logger
 from ..models.schema_def import get_cfg, get_filter_map
+from ..routers.dashboard import invalidate_dashboard_cache
+from ..routers.filter_options import invalidate_filter_options_cache
 from ..services.query_builder import (
     query_rows, get_row_by_id, create_row, update_row, delete_row,
     delete_rows_by_date, delete_rows_by_month_range,
@@ -82,7 +84,11 @@ def get_row(db_key: str = validate_db_key, row_id: int = ...):
 
 
 @router.post("/rows")
-def create(db_key: str = validate_db_key, body: Dict[str, Any] = ...):
+def create(
+    db_key: str = validate_db_key,
+    body: Dict[str, Any] = ...,
+    _admin: dict = Depends(require_admin),
+):
     """新增记录。"""
     try:
         new_id = create_row(db_key, body)
@@ -94,7 +100,12 @@ def create(db_key: str = validate_db_key, body: Dict[str, Any] = ...):
 
 
 @router.put("/rows/{row_id}")
-def update(db_key: str = validate_db_key, row_id: int = ..., body: Dict[str, Any] = ...):
+def update(
+    db_key: str = validate_db_key,
+    row_id: int = ...,
+    body: Dict[str, Any] = ...,
+    _admin: dict = Depends(require_admin),
+):
     """更新记录。"""
     try:
         if not update_row(db_key, row_id, body):
@@ -109,7 +120,11 @@ def update(db_key: str = validate_db_key, row_id: int = ..., body: Dict[str, Any
 
 
 @router.delete("/rows/{row_id}")
-def delete(db_key: str = validate_db_key, row_id: int = ...):
+def delete(
+    db_key: str = validate_db_key,
+    row_id: int = ...,
+    _admin: dict = Depends(require_admin),
+):
     """删除记录。"""
     try:
         if not delete_row(db_key, row_id):
@@ -125,6 +140,7 @@ def delete(db_key: str = validate_db_key, row_id: int = ...):
 def upsert_by_date(
     db_key: str = validate_db_key,
     body: Dict[str, Any] = ...,
+    _admin: dict = Depends(require_admin),
 ):
     """按日期覆盖新增：先删除同日期所有旧记录，再插入新记录。
 
@@ -160,6 +176,7 @@ def upsert_by_date(
 @router.post("/rows/clear")
 def clear_all_rows(
     db_key: str = validate_db_key,
+    _admin: dict = Depends(require_admin),
     month_from: Optional[str] = Body(None, embed=True, description="月份范围起 YYYY-MM-DD（月度列通常存每月首日）"),
     month_to: Optional[str] = Body(None, embed=True, description="月份范围止 YYYY-MM-DD"),
     confirm: bool = Body(False, embed=True, description="全部清空必须传 confirm=true 才会执行"),
@@ -179,6 +196,8 @@ def clear_all_rows(
                 "按月份范围删除 %s 表 %s: %s ~ %s, 删除 %d 条",
                 db_key, table, month_from, month_to, deleted,
             )
+            invalidate_dashboard_cache(db_key)
+            invalidate_filter_options_cache(db_key)
             return {
                 "message": f"已删除 {month_from} 至 {month_to} 共 {deleted} 条数据",
                 "db_key": db_key,
@@ -208,6 +227,8 @@ def clear_all_rows(
                     )
                 )
         logger.warning("清空数据库 %s 的表 %s 完成", db_key, table)
+        invalidate_dashboard_cache(db_key)
+        invalidate_filter_options_cache(db_key)
         return {"message": f"已清空数据库 {db_key} 的全部数据", "db_key": db_key}
     except Exception as e:
         logger.error("清空数据库 %s 失败: %s", db_key, e)

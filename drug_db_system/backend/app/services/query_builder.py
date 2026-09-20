@@ -400,10 +400,9 @@ def count_rows(db_key: str) -> int:
 
 
 def export_rows(db_key: str, batch_size: int = 5000) -> Dict[str, Any]:
-    """导出全部数据（服务端游标分批读取，避免内存爆炸）。
+    """导出全部数据（小数据量用，注意会在内存中累积所有行）。
 
-    返回: {"columns": ["id", ...], "rows": [...]}
-    注意：千万级数据请改用 /export/stream 流式 CSV 下载。
+    千万级数据请改用 /api/{db_key}/export 的流式 JSON 接口或 /export/stream CSV。
     """
     cfg = get_cfg(db_key)
     cols = col_names(db_key)
@@ -412,7 +411,7 @@ def export_rows(db_key: str, batch_size: int = 5000) -> Dict[str, Any]:
     stmt = sql.SQL("SELECT {} FROM {} ORDER BY id").format(
         select_cols, sql.Identifier(cfg["table"]))
 
-    # 命名服务端游标，分批 fetch
+    # 命名服务端游标，分批 fetch（仍会累积到内存，仅适合小数据）
     with get_conn(db_key) as conn:
         with conn.cursor("export_cursor", cursor_factory=RealDictCursor) as cur:
             cur.execute(stmt)

@@ -14,12 +14,13 @@
       </div>
     </div>
 
-    <!-- 操作栏 -->
-    <div class="toolbar card">
+    <!-- 操作栏（桌面端；手机端由底部导航替代） -->
+    <div class="toolbar card desktop-only">
       <div class="actions">
-        <el-button type="success" :icon="Upload" @click="openImportDialog">导入Excel</el-button>
+        <el-button type="success" :icon="Upload" @click="openImportDialog">导入数据</el-button>
         <el-button :icon="Download" @click="handleExport" :loading="exporting">导出查询结果</el-button>
         <el-button type="warning" :icon="DataLine" @click="statsVisible = true">统计</el-button>
+        <el-button v-if="isAdmin()" type="danger" :icon="Setting" @click="goAdmin">后台管理</el-button>
         <el-dropdown trigger="click" @command="onSettingCommand">
           <el-button :icon="Setting">设置</el-button>
           <template #dropdown>
@@ -34,8 +35,8 @@
       <div class="stats">共 {{ total }} 条 · 第 {{ page }}/{{ totalPages }} 页</div>
     </div>
 
-    <!-- 筛选面板 -->
-    <div class="filter-panel card">
+    <!-- 筛选面板（桌面端；手机端移入底部抽屉） -->
+    <div class="filter-panel card desktop-only">
       <div class="filter-row">
         <div class="filter-item">
           <label>日期范围</label>
@@ -85,12 +86,25 @@
       </div>
     </div>
 
-    <!-- 数据表格 -->
-    <div class="card table-card">
+    <!-- 数据表格（桌面端横向大表） -->
+    <div class="card table-card desktop-only">
       <DataTable
         :columns="columns"
         :rows="rows"
         :loading="loading"
+        @sort-change="onSortChange"
+      />
+    </div>
+
+    <!-- 数据列表（手机端卡片列表） -->
+    <div class="mobile-only">
+      <MobileRows
+        :columns="columns"
+        :rows="rows"
+        :loading="loading"
+        :total="total"
+        :page="page"
+        :total-pages="totalPages"
         @sort-change="onSortChange"
       />
     </div>
@@ -116,10 +130,10 @@
       />
     </div>
 
-    <!-- 导入 Excel 弹窗 -->
+    <!-- 导入数据弹窗（Excel / CSV） -->
     <el-dialog
       v-model="importDialogVisible"
-      title="导入 Excel 数据"
+      title="导入数据（Excel / CSV）"
       width="640px"
       destroy-on-close
     >
@@ -130,14 +144,14 @@
           drag
           multiple
           :auto-upload="false"
-          accept=".xlsx,.xls"
+          accept=".xlsx,.xls,.csv"
           :on-change="handleFileChange"
           :on-remove="handleFileRemove"
         >
           <el-icon class="upload-icon"><UploadFilled /></el-icon>
           <div class="upload-text">
-            <p class="upload-title">将 Excel 文件拖到此处，或<em>点击上传</em></p>
-            <p class="upload-hint">支持 .xlsx / .xls 格式，可一次选择多个文件，后台会排队依次处理</p>
+            <p class="upload-title">将 Excel / CSV 文件拖到此处，或<em>点击上传</em></p>
+            <p class="upload-hint">支持 .xlsx / .xls / .csv，可一次选择多个文件，后台会排队依次处理（CSV 更快）</p>
           </div>
         </el-upload>
 
@@ -149,8 +163,8 @@
         <div v-if="overwriteExisting" class="overwrite-warning">
           <el-icon><WarningFilled /></el-icon>
           <span>
-            <strong>注意：</strong>开启覆盖后，若 Excel 中的日期与数据库中已存在的数据来源不同，
-            同日期旧数据仍会被删除并替换为当前 Excel 内容。多个文件包含相同日期时，后处理的文件会覆盖先处理的文件。
+            <strong>注意：</strong>开启覆盖后，若文件中的日期与数据库中已存在的数据来源不同，
+            同日期旧数据仍会被删除并替换为当前文件内容。多个文件包含相同日期时，后处理的文件会覆盖先处理的文件。
             建议确认数据来源一致后再开启覆盖。
           </span>
         </div>
@@ -250,28 +264,64 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 手机端底部导航 + 抽屉（桌面端自动隐藏） -->
+    <MobileNavBar
+      :show-dashboard="false"
+      :filter-active="filterActive"
+      @query="onNavQuery"
+      @filter="filterSheetVisible = true"
+      @stats="statsVisible = true"
+      @more="moreSheetVisible = true"
+    />
+    <MobileFilterSheet
+      v-model:visible="filterSheetVisible"
+      v-model:date-range="dateRange"
+      v-model:product-codes="productCodes"
+      v-model:cities="cities"
+      v-model:provinces="provinces"
+      :show-provinces="false"
+      product-label="商品SAP编码"
+      city-label="事业部名称"
+      product-placeholder="10002345,10002346"
+      city-placeholder="海王星辰,海王健康"
+      @query="onNavQuery(); filterSheetVisible = false"
+      @reset="resetFilters(); filterSheetVisible = false"
+    />
+    <MobileMoreSheet
+      v-model:visible="moreSheetVisible"
+      @import="openImportDialog"
+      @export="handleExport"
+      @clear="openClearDialog"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Search, Upload, Download, RefreshRight, UploadFilled, InfoFilled, WarningFilled, DataLine, Setting, Delete, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import DataTable from '@/components/DataTable.vue'
-import StatisticsPanel from '@/components/StatisticsPanel.vue'
+import MobileNavBar from '@/components/MobileNavBar.vue'
+import MobileRows from '@/components/MobileRows.vue'
+import MobileFilterSheet from '@/components/MobileFilterSheet.vue'
+import MobileMoreSheet from '@/components/MobileMoreSheet.vue'
+const StatisticsPanel = defineAsyncComponent(() => import('@/components/StatisticsPanel.vue'))
 import {
   fetchDbs,
   fetchRows,
   clearData,
   clearDataByMonthRange,
   importExcelBatch,
+  DOWNLOAD_DISABLED,
   type DbMeta,
   type RowResponse,
   type ImportExcelBatchResponse,
 } from '@/api/client'
 import { getCurrentMonthRange } from '@/utils/date'
 import { logger } from '@/utils/logger'
+import { getToken, isAdmin, requireAdmin, requirePermission } from '@/utils/auth'
 
 const router = useRouter()
 
@@ -308,6 +358,24 @@ const overwriteExisting = ref(true)
 
 // 统计面板
 const statsVisible = ref(false)
+
+// 手机端：筛选抽屉 / 更多菜单（provinces 仅大参林用到，此处占位绑定）
+const provinces = ref('')
+const filterSheetVisible = ref(false)
+const moreSheetVisible = ref(false)
+
+// 手机端：是否挂了筛选条件（用于底部「筛选」红点提示）
+const filterActive = computed(() => {
+  const [s, e] = dateRange.value || []
+  const dateChanged = s !== defaultStart || e !== defaultEnd
+  return dateChanged || !!productCodes.value || !!cities.value || !!provinces.value
+})
+
+// 手机端底部「查询」：重新查询并回到顶部
+function onNavQuery() {
+  handleQuery()
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
 
 // 清空数据
 const clearDialogVisible = ref(false)
@@ -393,6 +461,8 @@ function switchDb(key: string) {
 // ---------- 导出 ----------
 
 async function handleExport() {
+  if (DOWNLOAD_DISABLED) return
+  if (!requirePermission('export', '导出数据')) return
   exporting.value = true
   try {
     const params = new URLSearchParams()
@@ -405,17 +475,26 @@ async function handleExport() {
     if (sortBy.value) params.set('sort_by', sortBy.value)
     if (sortDir.value) params.set('sort_dir', sortDir.value)
 
-    const url = `${API_BASE}/api/${dbKey}/export/excel?${params.toString()}`
-    const response = await fetch(url)
+    const url = `${API_BASE}/api/${dbKey}/export/csv?${params.toString()}`
+    // 裸 fetch 不走 client.ts，必须手动带令牌
+    const tk = getToken()
+    const response = await fetch(url, { headers: tk ? { Authorization: `Bearer ${tk}` } : {} })
     if (!response.ok) {
       const text = await response.text()
-      throw new Error(text || '导出失败')
+      // 429 由「导出闸门」返回（并发达上限/连点过快），body 形如 {"detail": "..."}
+      let msg = text || '导出失败'
+      try {
+        msg = JSON.parse(text)?.detail || msg
+      } catch {
+        /* 非 JSON，原样使用 */
+      }
+      throw new Error(msg)
     }
     const blob = await response.blob()
     const downloadUrl = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = downloadUrl
-    a.download = `海王_查询结果.xlsx`
+    a.download = `海王_查询结果.csv`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -431,6 +510,7 @@ async function handleExport() {
 // ---------- 导入 ----------
 
 function openImportDialog() {
+  if (!requirePermission('import', '导入 Excel')) return
   importResult.value = null
   overwriteExisting.value = true
   uploadFiles.value = []
@@ -455,7 +535,7 @@ function handleFileRemove(file: any) {
 
 async function submitImport() {
   if (uploadFiles.value.length === 0) {
-    ElMessage.warning('请先选择 Excel 文件')
+    ElMessage.warning('请先选择 Excel / CSV 文件')
     return
   }
   importing.value = true
@@ -488,7 +568,13 @@ function onSettingCommand(command: string) {
   }
 }
 
+/** 后台管理入口（仅管理员可见） */
+function goAdmin() {
+  router.push('/admin')
+}
+
 function openClearDialog() {
+  if (!requireAdmin('清空数据库数据')) return
   clearDialogVisible.value = true
   clearMode.value = 'month_range'
   clearMonthRange.value = null

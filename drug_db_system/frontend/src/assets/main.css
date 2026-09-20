@@ -25,3 +25,101 @@ body {
     Arial,
     sans-serif;
 }
+
+/* ============================================================
+   移动端响应式工具类与规则（仅 ≤768px 生效，桌面端不受影响）
+   ============================================================ */
+
+/* 桌面端专属块：手机端隐藏 */
+.desktop-only {
+  display: block;
+}
+
+/* 手机端专属块：桌面端隐藏（组件内部也已用媒体查询自管，这里兜底） */
+.mobile-only {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none !important;
+  }
+
+  .mobile-only {
+    display: block !important;
+  }
+
+  /* 顶部标题栏缩小 */
+  .app-header {
+    padding: 12px 14px;
+  }
+
+  .app-header .title {
+    font-size: 17px;
+    margin-bottom: 3px;
+  }
+
+  .app-header .subtitle {
+    font-size: 11px;
+  }
+
+  .app-main {
+    padding: 12px 12px 84px; /* 底部留白给固定导航栏 */
+  }
+
+  /* 公司切换标签：横向滚动 */
+  .company-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 12px;
+    padding-bottom: 2px;
+  }
+
+  .company-tabs .tab {
+    flex: 0 0 auto;
+    padding: 7px 14px;
+    font-size: 13px;
+  }
+
+  /* 分页栏：占满宽度、点击区域更大 */
+  .pagination-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .pagination-bar .page-size {
+    justify-content: center;
+  }
+
+  .pagination-bar .el-pagination {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .pagination-bar .el-pagination .el-pager li,
+  .pagination-bar .el-pagination .btn-prev,
+  .pagination-bar .el-pagination .btn-next {
+    min-width: 34px;
+    height: 34px;
+    line-height: 34px;
+  }
+
+  /* 弹窗在小屏上不溢出 */
+  .el-dialog {
+    width: 92vw !important;
+    max-width: 92vw;
+  }
+
+  /* 统计 / 看板抽屉在小屏占满 */
+  .el-drawer {
+    max-width: 100vw;
+  }
+
+  /* 看板筛选表单纵向排列 */
+  .dash-body .filter-form .el-form-item {
+    margin-right: 0;
+  }
+}

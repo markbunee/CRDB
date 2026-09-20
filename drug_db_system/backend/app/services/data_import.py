@@ -24,7 +24,12 @@ from psycopg2 import sql
 
 from ..config import EXCEL_DIR
 from ..database import direct_conn, admin_conn
-from ..models.schema_def import SCHEMAS, get_cfg, col_names, date_columns
+from ..logger import get_logger
+from ..models.schema_def import (
+    SCHEMAS, get_cfg, col_names, date_columns, numeric_columns,
+)
+
+logger = get_logger("app.services.data_import")
 
 
 def parse_dates_vectorized(s: pd.Series) -> pd.Series:
@@ -72,24 +77,47 @@ def format_numeric_series(s: pd.Series) -> pd.Series:
     return out
 
 
+def _to_numeric_text(s: pd.Series, col: str) -> pd.Series:
+    """把数值列统一成「无多余小数点的数字文本」，供 COPY 写入。
+
+    为什么必须按数据库列类型来判断（而不是只看 pandas 推断的类型）：
+    - xlsx 读取时 pandas 会把「数量」推断成 float，需要去掉 .0；
+    - CSV 读取时我们刻意用 ``dtype=str`` 保留前导零，于是「12.0」是字符串，
+      若直接写进 INTEGER 列会被 PostgreSQL 拒绝（invalid input syntax）。
+      这里按 schema 声明的数值列做一次转换，两条路径口径一致。
+    转不动的值（如「暂无」）按空值处理并打警告，不再让整批导入失败。
+    """
+    if not pd.api.types.is_numeric_dtype(s):
+        coerced = pd.to_numeric(s, errors='coerce')
+        non_empty = s.replace("", pd.NA) if s.dtype == object else s
+        bad = int((coerced.isna() & non_empty.notna()).sum())
+        if bad:
+            logger.warning("导入列「%s」有 %d 个值无法转为数字，已按空值处理", col, bad)
+        s = coerced
+    if s.isna().all():
+        return s.astype('object')
+    return format_numeric_series(s)
+
+
 def prepare_for_copy(df: pd.DataFrame, db_key: str) -> pd.DataFrame:
     """把原始 DataFrame 处理成适合 PostgreSQL COPY 的 DataFrame。
 
     - 按数据库列顺序重排
     - 日期列批量解析并格式化为 YYYY-MM-DD
-    - 数值列去掉 .0
+    - 数值列（按 schema 声明）去掉 .0，保证能写进 INTEGER/NUMERIC 列
     - 缺失值保持 NaN/NaT，由 to_csv(na_rep='') 输出为空字符串
     """
     cols = col_names(db_key)
     date_cols = set(date_columns(db_key))
+    numeric_cols = set(numeric_columns(db_key))
 
     out = pd.DataFrame({c: df.get(c) for c in cols})
 
     for c in cols:
         if c in date_cols:
             out[c] = parse_dates_vectorized(out[c]).dt.strftime('%Y-%m-%d')
-        elif pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = format_numeric_series(out[c])
+        elif c in numeric_cols or pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = _to_numeric_text(out[c], c)
         else:
             # 转为 object，避免 category 等非常规类型影响 to_csv
             out[c] = out[c].astype('object')

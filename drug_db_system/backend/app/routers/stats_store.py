@@ -10,23 +10,18 @@
 
 地域级别 region_level 可在城市(city)/省份(province)间二选一切换（城市与省份互斥）。
 
-导出：GET /stats/store_count/export 返回 xlsx（每个 table 一个 sheet），英文文件名。
+导出：GET /stats/store_count/export 返回 **CSV**（多张子表用首列「分组」区分），英文文件名。
 """
-import io
-import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2 import sql
 
-from ..dependencies import validate_db_key
+from ..dependencies import validate_db_key, require_admin, require_permission
 from ..models.schema_def import get_cfg, get_field_map, get_region_levels, get_region_label
 from ..services.product_map import get_product_map
+from ..services.csv_export import csv_response, tables_to_csv_text
+from ..services.export_gate import ExportRejected, export_slot
 from ..database import get_conn
 from ..logger import get_logger
 
@@ -34,18 +29,6 @@ router = APIRouter(prefix="/api/{db_key}", tags=["stats-store"])
 logger = get_logger("app.routers.stats_store")
 
 DIMENSIONS = ("city", "product", "time")
-
-# ---------- Excel 样式 ----------
-HEADER_FILL = PatternFill(start_color="3B6BD6", end_color="3B6BD6", fill_type="solid")
-HEADER_FONT = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
-CELL_FONT = Font(name="Microsoft YaHei", size=10)
-HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-THIN_BORDER = Border(
-    left=Side(style="thin", color="D0D5DD"),
-    right=Side(style="thin", color="D0D5DD"),
-    top=Side(style="thin", color="D0D5DD"),
-    bottom=Side(style="thin", color="D0D5DD"),
-)
 
 
 def _parse_list(val: Optional[str]) -> List[str]:
@@ -71,8 +54,10 @@ def _val_to_str(val: Any) -> str:
 
 def _fmt_val(fm: Dict[str, str], col_name: Optional[str], val: Any,
              pmap: Optional[Dict[str, str]] = None) -> Optional[str]:
-    if col_name is None or val is None:
+    if col_name is None:
         return None
+    if val is None:
+        return "未知"
     if col_name == fm["month_col"]:
         return _fmt_month(val)
     s = _val_to_str(val)
@@ -103,13 +88,28 @@ def _safe_sort(vals: list) -> list:
         return sorted(vals, key=lambda v: (v is None, str(v)))
 
 
+def _store_type_expr(cfg: dict) -> Optional[sql.Composable]:
+    """返回连锁/加盟的 CASE 表达式（仅含 大区/营运区 的库支持，大参林满足）。
+
+    与看板 dashboard._store_type_expr 同口径：大区或营运区字段含「加盟」二字即加盟，否则连锁。
+    """
+    if any(c[0] == "大区" for c in cfg["columns"]) and any(c[0] == "营运区" for c in cfg["columns"]):
+        return sql.SQL(
+            "CASE WHEN {daqu} LIKE '%%加盟%%' OR {yingyun} LIKE '%%加盟%%' "
+            "THEN '加盟' ELSE '连锁' END"
+        ).format(daqu=sql.Identifier("大区"), yingyun=sql.Identifier("营运区"))
+    return None
+
+
 def _build_where(
     fm: Dict[str, str],
+    cfg: dict,
     date_from: Optional[str],
     date_to: Optional[str],
     product_list: List[str],
     region_col: str,
     region_list: List[str],
+    store_type: str = "all",
 ):
     conditions: List[sql.Composable] = []
     params: list = []
@@ -135,6 +135,12 @@ def _build_where(
         )
         params.extend(region_list)
 
+    st_expr = _store_type_expr(cfg)
+    if st_expr is not None and store_type in ("chain", "franchise"):
+        label = "连锁" if store_type == "chain" else "加盟"
+        conditions.append(sql.SQL("({}) = %s").format(st_expr))
+        params.append(label)
+
     where = sql.SQL("")
     if conditions:
         where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
@@ -151,11 +157,16 @@ def _make_title(
     region_name: str,
 ) -> str:
     if merge_split or split_label is None:
+        if split_name == "省份":
+            return "全部省份（合并）"
         if dimension == "city":
             return f"全部{region_name}（合并）"
         if dimension == "product":
             return "全部品类（合并）"
         return f"全部月份（合并）· {_range_label(date_from, date_to)}"
+    if split_name == "省份":
+        # 省份展开：子表名直接用省名（导出时即 Excel sheet 名），不再加「省份: 」前缀
+        return f"{split_label}"
     return f"{split_name}: {split_label}"
 
 
@@ -171,7 +182,9 @@ def _run_store_count(
     products: Optional[str],
     merge_cities: bool,
     merge_products: bool,
+    merge_province_cities: bool = False,
     map_names: bool = False,
+    store_type: str = "all",
 ) -> dict:
     """门店数统计核心逻辑：查询 + 透视，返回结果 dict（JSON 端点与导出共用）。
 
@@ -203,53 +216,63 @@ def _run_store_count(
 
     product_list = _parse_list(products)
 
-    if dimension == "city":
+    # 省份模式：
+    # - 默认（合并省份未勾选）按「省份展开」：每个省份一张子表，表内 行=城市、列=品类，月份按整段区间合并；
+    # - 勾选「合并省份」(merge_cities)：跨省份合并为一张总表；
+    # - 勾选「合并省份内的城市」(merge_province_cities)：每省内城市折叠成一个整省合计（一省一行）。
+    province_mode = region_level == "province" and "province_col" in fm
+    province_expanded = province_mode
+
+    if province_mode:
+        split_col = fm["province_col"]
+        row_col = fm["city_col"]
+        col_col = fm["product_col"]
+        split_name, row_name, col_name = "省份", region_label, "品类"
+        merge_split = merge_cities         # 合并省份：跨省份合并为单表
+        merge_row = merge_province_cities  # 合并省份内的城市：折叠成整省合计
+        merge_col = merge_products         # 合并品类
+    elif dimension == "city":
         split_col = region_col
         row_col = fm["product_col"]
         col_col = fm["month_col"]
         merge_split = merge_cities
+        merge_row = merge_products
+        merge_col = merge_months
         split_name, row_name, col_name = region_name, "品类", "月份"
     elif dimension == "product":
         split_col = fm["product_col"]
         row_col = region_col
         col_col = fm["month_col"]
         merge_split = merge_products
+        merge_row = merge_cities
+        merge_col = merge_months
         split_name, row_name, col_name = "品类", region_name, "月份"
     else:
         split_col = fm["month_col"]
         row_col = region_col
         col_col = fm["product_col"]
         merge_split = merge_months
+        merge_row = merge_cities
+        merge_col = merge_products
         split_name, row_name, col_name = "月份", region_name, "品类"
 
     month_col = fm["month_col"]
 
-    # 根据当前维度，确定 split/row/col 分别由哪个 merge 参数控制
-    if dimension == "city":
-        merge_for: Dict[str, bool] = {
-            split_col: merge_cities,
-            row_col: merge_products,
-            col_col: merge_months,
-        }
-    elif dimension == "product":
-        merge_for = {
-            split_col: merge_products,
-            row_col: merge_cities,
-            col_col: merge_months,
-        }
-    else:
-        merge_for = {
-            split_col: merge_months,
-            row_col: merge_cities,
-            col_col: merge_products,
-        }
+    # 省份模式下月份恒合并（不进表）；其余维度月份按 merge_months 控制
+    merge_for: Dict[str, bool] = {
+        split_col: merge_split,
+        row_col: merge_row,
+        col_col: merge_col,
+    }
+    if not province_mode:
+        merge_for[month_col] = merge_months
 
     group_cols: List[sql.Identifier] = []
     for col, merge_flag in merge_for.items():
         if col and not merge_flag:
             group_cols.append(sql.Identifier(col))
 
-    where, params = _build_where(fm, date_from, date_to, product_list, region_col, region_list)
+    where, params = _build_where(fm, cfg, date_from, date_to, product_list, region_col, region_list, store_type)
 
     fields = list(group_cols) + [
         sql.SQL("COUNT(DISTINCT {}) AS store_count").format(
@@ -306,11 +329,13 @@ def _run_store_count(
 
     return {
         "tables": tables,
+        "province_expanded": province_expanded,
         "dimension": dimension,
         "region_level": region_level,
         "merge_months": merge_months,
         "merge_cities": merge_cities,
         "merge_products": merge_products,
+        "merge_province_cities": merge_province_cities,
         "total_raw_rows": len(raw_rows),
     }
 
@@ -348,19 +373,19 @@ def _pivot(
         if split_col and not merge_split:
             v = r.get(split_col)
             k = _val_to_str(v)
-            if k and k not in split_seen:
+            if k not in split_seen:
                 split_seen.add(k)
                 split_raw.append(v)
         if row_col and not merge_row:
             v = r.get(row_col)
             k = _val_to_str(v)
-            if k and k not in row_seen:
+            if k not in row_seen:
                 row_seen.add(k)
                 row_raw.append(v)
         if col_col and not merge_col:
             v = r.get(col_col)
             k = _val_to_str(v)
-            if k and k not in col_seen:
+            if k not in col_seen:
                 col_seen.add(k)
                 col_raw.append(v)
 
@@ -427,66 +452,9 @@ def _pivot(
     return tables
 
 
-# ---------- Excel 导出 ----------
-
-def _safe_sheet_name(title: str, idx: int) -> str:
-    """生成合法 Excel sheet 名（去非法字符、截断 31 字符）。"""
-    name = re.sub(r'[:\\/\?\*\[\]]', "_", str(title)).strip()
-    if not name:
-        name = f"sheet{idx + 1}"
-    if len(name) > 31:
-        name = name[:31]
-    return name
-
-
-def _tables_to_xlsx(tables: List[dict]) -> io.BytesIO:
-    """把多张透视表写入一个 xlsx（每个 table 一个 sheet）。"""
-    wb = Workbook()
-    wb.remove(wb.active)  # 删除默认 sheet
-
-    for i, t in enumerate(tables):
-        ws = wb.create_sheet(title=_safe_sheet_name(t.get("title") or f"sheet{i+1}", i))
-        col_keys = list(t.get("col_keys", []))
-        row_keys = list(t.get("row_keys", []))
-        rows = t.get("rows", [])
-
-        # 表头：行表头 + 各列
-        header = [t.get("row_header", "")] + col_keys
-        ws.append(header)
-        for c in range(1, len(header) + 1):
-            cell = ws.cell(row=1, column=c)
-            cell.fill = HEADER_FILL
-            cell.font = HEADER_FONT
-            cell.alignment = HEADER_ALIGN
-            cell.border = THIN_BORDER
-        ws.freeze_panes = "A2"
-
-        # 数据行
-        for row in rows:
-            line = [row.get("row_key", "")]
-            cells = row.get("cells", {})
-            for ck in col_keys:
-                v = cells.get(ck, 0)
-                line.append(v if v is not None else 0)
-            ws.append(line)
-            # 普通单元格字体
-            r = ws.max_row
-            for c in range(1, len(line) + 1):
-                ws.cell(row=r, column=c).font = CELL_FONT
-
-        # 列宽
-        ws.column_dimensions["A"].width = 18
-        for j in range(len(col_keys)):
-            ws.column_dimensions[get_column_letter(j + 2)].width = 16
-
-    if not wb.worksheets:
-        ws = wb.create_sheet(title="empty")
-        ws.append(["无数据"])
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
+# ---------- CSV 导出 ----------
+# 多张子表统一拼成一个 CSV：首列「分组」= 原子表标题（原 xlsx 的 sheet 名），
+# 后面是行表头 + 各列；各子表列取并集，缺失补 0。实现见 services/csv_export.py。
 
 
 @router.get("/stats/store_count")
@@ -502,18 +470,21 @@ def store_count(
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔"),
     merge_cities: bool = Query(False, description="合并地域维度为单表"),
     merge_products: bool = Query(False, description="合并品类维度为单表"),
+    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
     map_names: bool = Query(False, description="品类编码映射为中文名（无映射保持编码）"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
     """实销门店数统计 — 通用三维度 + 地域级别切换。"""
     return _run_store_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
+        cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type,
     )
 
 
 @router.get("/stats/store_count/export")
 def export_store_count(
     db_key: str = validate_db_key,
+    user: dict = Depends(require_permission("export")),
     dimension: str = Query("city", description="统计维度: city | product | time"),
     region_level: str = Query("city", description="地域级别: city | province"),
     date_from: Optional[str] = Query(None),
@@ -524,24 +495,28 @@ def export_store_count(
     products: Optional[str] = Query(None),
     merge_cities: bool = Query(False),
     merge_products: bool = Query(False),
+    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
     map_names: bool = Query(False, description="品类编码映射为中文名（与页面口径一致）"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
-    """导出门店数统计结果为 xlsx（每个 table 一个 sheet，英文文件名）。"""
-    result = _run_store_count(
-        db_key, dimension, region_level, date_from, date_to, merge_months,
-        cities, provinces, products, merge_cities, merge_products, map_names,
-    )
-    tables = result["tables"]
-    buf = _tables_to_xlsx(tables)
+    """导出门店数统计结果为 CSV（多张子表用首列「分组」区分，英文文件名）。
 
-    filename = f"store_count_{dimension}_{region_level}.xlsx"
-    encoded = quote(filename)
+    查询走导出闸门：并发满 / 连点会 429，避免多人同时跑重聚合把服务器挤崩。
+    """
+    try:
+        with export_slot(user.get("id"), f"{db_key}/stats/store_count.csv"):
+            result = _run_store_count(
+                db_key, dimension, region_level, date_from, date_to, merge_months,
+                cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type,
+            )
+            tables = result["tables"]
+            text = tables_to_csv_text(tables)
+    except ExportRejected as e:
+        raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
+
+    filename = f"store_count_{dimension}_{region_level}.csv"
     logger.info(
-        "门店数导出 %s dim=%s region=%s -> %d 表",
+        "门店数导出（CSV）%s dim=%s region=%s -> %d 表",
         db_key, dimension, region_level, len(tables),
     )
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
+    return csv_response(filename, text)

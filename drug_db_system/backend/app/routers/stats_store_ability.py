@@ -3,7 +3,7 @@
 
 本期范围（业务指定）：
   - 仅大参林（dashenlin），其它库返回 400；前端按 supports_store_ability 控制菜单显隐
-  - 城市固定「广州」（city_col IN ('广州','广州市')，兼容两种写法且可命中索引）
+  - 地域可筛选：城市 / 省份 由前端传入（英文逗号分隔，留空=全部），兼容「广州/广州市」「广东/广东省」两种写法
   - 门店身份按「门店名称」分组（不用门店编码）
   - 产出口径为实销盒数 SUM(数量)，不涉及金额
 
@@ -27,34 +27,28 @@ GET /stats/store_ability/latest_range 返回广州「数据最新月份」的起
 供前端默认填充时间范围（数据常滞后于当前自然月，不能用系统月份）。
 """
 import calendar
-import io
-import re
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
-from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2 import sql
 
-from ..dependencies import validate_db_key
+from ..dependencies import validate_db_key, require_admin, require_permission
 from ..models.schema_def import get_cfg, get_field_map, supports_store_ability
 from ..services.product_map import get_product_map
+from ..services.csv_export import csv_response, rows_to_csv_text
+from ..services.export_gate import ExportRejected, export_slot
 from ..database import get_conn
 from ..logger import get_logger
 
 router = APIRouter(prefix="/api/{db_key}", tags=["stats-store-ability"])
 logger = get_logger("app.routers.stats_store_ability")
 
-# ---------- 本期固定口径 ----------
-FIXED_CITY = "广州"
-# 城市列在库里「广州」「广州市」两种写法都可能存在。
-# 这里用 IN 精确枚举而不用 LIKE '广州%'：LIKE 前缀匹配在中文排序规则下无法命中
-# (城市, 日期) 复合索引，千万级数据会退化成全表扫描；IN 可以正常走索引。
-FIXED_CITY_VARIANTS = ("广州", "广州市")
+# ---------- 地域筛选 ----------
+# 门店能力分析地域由前端传入（城市 / 省份，英文逗号分隔，留空=全部），不再固定广州。
+# 库里「广州」/「广州市」、「广东」/「广东省」两种写法都可能存在，用 _expand_region 兼容
+# （IN 精确枚举，可命中 (城市, 日期) / (省份, 日期) 复合索引，避免全表扫描）。
+DEFAULT_CITY = "广州"  # 仅作前端默认回填参考，后端不强制
 DEFAULT_TOP_N = 100
 MAX_TOP_N = 500
 TOP_CATEGORY_COUNT = 3  # 取销量前 3 的品类
@@ -62,19 +56,6 @@ TOP_CATEGORY_COUNT = 3  # 取销量前 3 的品类
 MAX_STORE_TERMS = 20
 # 门店趋势按天展示的柱子上限（约 10 年），防止误选超长区间导致柱子密到无法阅读
 MAX_TREND_DAYS = 3660
-
-# ---------- Excel 样式（与 stats_store.py 保持一致） ----------
-HEADER_FILL = PatternFill(start_color="3B6BD6", end_color="3B6BD6", fill_type="solid")
-HEADER_FONT = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
-CELL_FONT = Font(name="Microsoft YaHei", size=10)
-HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-THIN_BORDER = Border(
-    left=Side(style="thin", color="D0D5DD"),
-    right=Side(style="thin", color="D0D5DD"),
-    top=Side(style="thin", color="D0D5DD"),
-    bottom=Side(style="thin", color="D0D5DD"),
-)
-
 
 def _parse_list(val: Optional[str]) -> List[str]:
     if not val:
@@ -104,10 +85,39 @@ def _day_sequence(d_from: date, d_to: date) -> List[str]:
     return days
 
 
-def _safe_sheet_name(title: str) -> str:
-    """生成合法 Excel sheet 名（去非法字符、截断 31 字符）。"""
-    name = re.sub(r'[:\\/\?\*\[\]]', "_", str(title)).strip()
-    return (name or "sheet1")[:31]
+def _store_type_expr(cfg: dict) -> Optional[sql.Composable]:
+    """返回连锁/加盟的 CASE 表达式（仅含 大区/营运区 的库支持，大参林满足）。
+
+    与看板 dashboard._store_type_expr 同口径：大区或营运区字段含「加盟」二字即加盟，
+    否则连锁（直营）。门店能力分析本期仅大参林开放，大参林具备这两列，故一定生效。
+
+    注意：该表达式会进入带参数的 execute()，psycopg2 会把 SQL 里的字面量 '%'
+    当作占位符解析，故 LIKE 模式中的 '%' 必须写成 '%%'（执行时还原为单个 '%'），
+    否则会报 IndexError: list index out of range。
+    """
+    if any(c[0] == "大区" for c in cfg["columns"]) and any(c[0] == "营运区" for c in cfg["columns"]):
+        return sql.SQL(
+            "CASE WHEN {daqu} LIKE '%%加盟%%' OR {yingyun} LIKE '%%加盟%%' "
+            "THEN '加盟' ELSE '连锁' END"
+        ).format(daqu=sql.Identifier("大区"), yingyun=sql.Identifier("营运区"))
+    return None
+
+
+def _expand_region(terms: List[str], suffix: str) -> List[str]:
+    """兼容「广州」/「广州市」、「广东」/「广东省」两种写法。
+
+    对每个输入词取其去后缀的基名，再生成 {基名, 基名+suffix} 去重集合用于 IN 精确匹配，
+    避免只输「广州」却漏掉库里「广州市」的行（省份同理）。
+    """
+    seen: set = set()
+    out: List[str] = []
+    for t in terms:
+        base = t[: -len(suffix)] if t.endswith(suffix) else t
+        for v in (base, base + suffix):
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+    return out
 
 
 def _run_store_ability(
@@ -118,6 +128,9 @@ def _run_store_ability(
     top_n: int,
     stores: Optional[str] = None,
     map_names: bool = False,
+    store_type: str = "all",
+    cities: Optional[str] = None,
+    provinces: Optional[str] = None,
 ) -> dict:
     """门店能力分析核心逻辑：查询 + 组装，JSON 端点与导出共用。
 
@@ -147,20 +160,18 @@ def _run_store_ability(
     product_name_col = fm.get("product_name_col", "商品名称")
     qty_col = fm["qty_col"]
     city_col = fm["city_col"]
+    province_col = fm.get("province_col")
     date_col = fm["date_col"]
-    table = get_cfg(db_key)["table"]
+    cfg = get_cfg(db_key)
+    table = cfg["table"]
 
     # ---------- WHERE 条件（参数顺序必须与占位符顺序一致） ----------
     conditions: List[sql.Composable] = [
-        sql.SQL("{} IN ({})").format(
-            sql.Identifier(city_col),
-            sql.SQL(", ").join(sql.Placeholder() * len(FIXED_CITY_VARIANTS)),
-        ),
         sql.SQL("{} IS NOT NULL").format(sql.Identifier(store_col)),
         sql.SQL("btrim({}) <> ''").format(sql.Identifier(store_col)),
         sql.SQL("{} IS NOT NULL").format(sql.Identifier(date_col)),
     ]
-    params: list = list(FIXED_CITY_VARIANTS)
+    params: list = []
 
     if date_from:
         conditions.append(sql.SQL("{} >= %s").format(sql.Identifier(date_col)))
@@ -168,6 +179,28 @@ def _run_store_ability(
     if date_to:
         conditions.append(sql.SQL("{} <= %s").format(sql.Identifier(date_col)))
         params.append(date_to)
+
+    # 地域筛选：城市 / 省份 英文逗号分隔，留空=全部；兼容「市 / 省市」两种写法（IN 可命中索引）
+    city_terms = _parse_list(cities)
+    if city_terms:
+        expanded = _expand_region(city_terms, "市")
+        conditions.append(
+            sql.SQL("{} IN ({})").format(
+                sql.Identifier(city_col),
+                sql.SQL(", ").join(sql.Placeholder() * len(expanded)),
+            )
+        )
+        params.extend(expanded)
+    province_terms = _parse_list(provinces)
+    if province_terms and province_col:
+        expanded_p = _expand_region(province_terms, "省")
+        conditions.append(
+            sql.SQL("{} IN ({})").format(
+                sql.Identifier(province_col),
+                sql.SQL(", ").join(sql.Placeholder() * len(expanded_p)),
+            )
+        )
+        params.extend(expanded_p)
 
     # 门店名称筛选：多个关键词之间 OR，模糊「包含」匹配（ILIKE '%词%'），
     # 留空则不限门店。ILIKE 本身命中不了索引，但前面的 城市 IN + 日期区间 已通过
@@ -197,6 +230,14 @@ def _run_store_ability(
             )
         )
         params.extend(product_list)
+
+    # 门店类型（连锁/直营 vs 加盟）：仅支持库生效；store_type=all 不限制。
+    # 判定口径与看板一致：大区或营运区含「加盟」二字即加盟，否则连锁。
+    st_expr = _store_type_expr(cfg)
+    if st_expr is not None and store_type in ("chain", "franchise"):
+        label = "连锁" if store_type == "chain" else "加盟"
+        conditions.append(sql.SQL("({}) = %s").format(st_expr))
+        params.append(label)
 
     where = sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
 
@@ -323,9 +364,10 @@ def _run_store_ability(
         top_n, len(store_list), store_count, len(raw_rows),
     )
 
+    region_desc = cities or provinces or "全部"
     return {
         "db_key": db_key,
-        "city": FIXED_CITY,
+        "city": region_desc,
         "date_from": date_from,
         "date_to": date_to,
         "summary": {
@@ -338,7 +380,7 @@ def _run_store_ability(
     }
 
 
-# ---------- Excel 导出 ----------
+# ---------- CSV 导出 ----------
 
 def _store_to_row(s: dict) -> list:
     """把单个门店拍平成一行（品类列固定 3 组 Top + 1 组末位）。"""
@@ -360,43 +402,15 @@ def _store_to_row(s: dict) -> list:
     return line
 
 
-def _store_ability_to_xlsx(result: dict) -> io.BytesIO:
-    """把门店能力分析结果写入 xlsx（单个 sheet）。"""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = _safe_sheet_name("门店能力分析")
-
+def _store_ability_to_csv(result: dict) -> str:
+    """把门店能力分析结果写成 CSV 文本（单表，列结构固定）。"""
     header = ["排名", "门店名称", "实销总数", "品类数"]
     for i in range(1, TOP_CATEGORY_COUNT + 1):
         header.extend([f"最佳品类{i}", f"品类{i}盒数", f"品类{i}占比"])
     header.extend(["末位品类", "末位品类盒数", "末位品类占比"])
 
-    ws.append(header)
-    for c in range(1, len(header) + 1):
-        cell = ws.cell(row=1, column=c)
-        cell.fill = HEADER_FILL
-        cell.font = HEADER_FONT
-        cell.alignment = HEADER_ALIGN
-        cell.border = THIN_BORDER
-    ws.freeze_panes = "A2"
-
-    for s in result.get("stores", []):
-        ws.append(_store_to_row(s))
-        r = ws.max_row
-        for c in range(1, len(header) + 1):
-            ws.cell(row=r, column=c).font = CELL_FONT
-
-    # 列宽：前两列与品类名列宽一些，数值列适中
-    widths = [6, 30, 12, 8]
-    for _ in range(TOP_CATEGORY_COUNT + 1):
-        widths.extend([26, 12, 10])
-    for j, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(j)].width = w
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf
+    rows = (_store_to_row(s) for s in result.get("stores", []))
+    return rows_to_csv_text(header, rows)
 
 
 @router.get("/stats/store_ability")
@@ -408,49 +422,59 @@ def store_ability(
     stores: Optional[str] = Query(None, description="门店名称关键词，英文逗号分隔，模糊匹配；留空=全部门店"),
     top_n: int = Query(DEFAULT_TOP_N, ge=1, le=MAX_TOP_N, description="返回前 N 家门店"),
     map_names: bool = Query(False, description="品类显示映射表中文名（无映射回落商品名称）"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
+    cities: Optional[str] = Query(None, description="城市，英文逗号分隔；留空=全部（兼容 市/省市 两种写法）"),
+    provinces: Optional[str] = Query(None, description="省份，英文逗号分隔；留空=全部"),
 ):
-    """门店能力分析（大参林·广州）：总产出排行 + 品类 Top3 与末位。"""
+    """门店能力分析（大参林）：总产出排行 + 品类 Top3 与末位（地域可筛选）。"""
     return _run_store_ability(
         db_key, date_from, date_to, products, top_n, stores=stores, map_names=map_names,
+        store_type=store_type, cities=cities, provinces=provinces,
     )
 
 
 @router.get("/stats/store_ability/export")
 def export_store_ability(
     db_key: str = validate_db_key,
+    user: dict = Depends(require_permission("export")),
     date_from: Optional[str] = Query(None, description="日期起 YYYY-MM-DD（必填）"),
     date_to: Optional[str] = Query(None, description="日期止 YYYY-MM-DD（与 date_from 至少填其一）"),
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔；留空=全部品类"),
     stores: Optional[str] = Query(None, description="门店名称关键词，英文逗号分隔，模糊匹配；留空=全部门店"),
     top_n: int = Query(DEFAULT_TOP_N, ge=1, le=MAX_TOP_N),
     map_names: bool = Query(False, description="品类显示映射表中文名（与页面口径一致）"),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
+    cities: Optional[str] = Query(None, description="城市，英文逗号分隔；留空=全部（兼容 市/省市 两种写法）"),
+    provinces: Optional[str] = Query(None, description="省份，英文逗号分隔；留空=全部"),
 ):
-    """导出门店能力分析结果为 xlsx。"""
-    result = _run_store_ability(
-        db_key, date_from, date_to, products, top_n, stores=stores, map_names=map_names,
-    )
-    buf = _store_ability_to_xlsx(result)
+    """导出门店能力分析结果为 CSV（走导出闸门，避免并发重查询拖垮服务器）。"""
+    try:
+        with export_slot(user.get("id"), f"{db_key}/stats/store_ability.csv"):
+            result = _run_store_ability(
+                db_key, date_from, date_to, products, top_n, stores=stores,
+                map_names=map_names, store_type=store_type, cities=cities,
+                provinces=provinces,
+            )
+            text = _store_ability_to_csv(result)
+    except ExportRejected as e:
+        raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
 
-    filename = "store_ability_guangzhou.xlsx"
-    encoded = quote(filename)
+    filename = "store_ability_guangzhou.csv"
     logger.info(
-        "门店能力分析导出 %s date=[%s,%s] stores=%s -> %d 家",
+        "门店能力分析导出（CSV）%s date=[%s,%s] stores=%s -> %d 家",
         db_key, date_from or "-", date_to or "-", stores or "-",
         len(result.get("stores", [])),
     )
-    return StreamingResponse(
-        buf,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
-    )
+    return csv_response(filename, text)
 
 
 @router.get("/stats/store_ability/latest_range")
 def store_ability_latest_range(db_key: str = validate_db_key):
-    """返回广州范围内「数据最新月份」的日期区间，供前端默认填充时间范围。
+    """返回全库「数据最新月份」的日期区间，供前端默认填充时间范围。
 
     销售数据通常滞后于当前自然月（例如现在是 9 月但数据只到 8 月），因此默认区间
     应以库里 MAX(日期) 所在月份为准，而不是当前系统月份，否则默认查出来是空的。
+    门店能力分析现已支持地域筛选，这里返回全局最新月份，前端再按所选地域查询。
     返回该月的完整首末日；无数据时三个字段均为 null，前端按当月兜底。
     """
     fm = get_field_map(db_key)
@@ -460,23 +484,21 @@ def store_ability_latest_range(db_key: str = validate_db_key):
         raise HTTPException(400, f"门店能力分析暂不支持数据库: {db_key}（本期仅大参林开放）")
 
     date_col = fm["date_col"]
-    city_col = fm["city_col"]
     table = get_cfg(db_key)["table"]
 
-    # 城市 IN 可命中 (城市, 日期) 索引，MAX 只需定位到索引末尾，代价极低
+    # 返回全库 MAX(日期) 所在月份（不限地域），门店能力分析现已支持地域筛选，
+    # 默认时间范围用全局最新月份更通用；MAX 定位索引末尾代价极低。
     stmt = sql.SQL(
-        "SELECT MAX({date}) FROM {table} WHERE {city} IN ({ph})"
+        "SELECT MAX({date}) FROM {table}"
     ).format(
         date=sql.Identifier(date_col),
         table=sql.Identifier(table),
-        city=sql.Identifier(city_col),
-        ph=sql.SQL(", ").join(sql.Placeholder() * len(FIXED_CITY_VARIANTS)),
     )
 
     try:
         with get_conn(db_key) as conn:
             with conn.cursor() as cur:
-                cur.execute(stmt, list(FIXED_CITY_VARIANTS))
+                cur.execute(stmt)
                 row = cur.fetchone()
     except Exception as e:
         logger.error("门店能力分析 取最新月份失败 %s: %s", db_key, e)
@@ -536,22 +558,19 @@ def store_ability_trend(
     store_col = fm["store_name_col"]
     product_col = fm["product_col"]
     qty_col = fm["qty_col"]
-    city_col = fm["city_col"]
     date_col = fm["date_col"]
     table = get_cfg(db_key)["table"]
 
-    # 条件顺序必须与 params 追加顺序一致
+    # 条件顺序必须与 params 追加顺序一致。
+    # 门店趋势按门店名称（btrim 后）精确匹配，不限定城市，因此点全国任意城市的店都能查到；
+    # 与门店能力分析「按门店名称分组」口径一致（同名店跨城市会被合并）。
     conditions: List[sql.Composable] = [
-        sql.SQL("{} IN ({})").format(
-            sql.Identifier(city_col),
-            sql.SQL(", ").join(sql.Placeholder() * len(FIXED_CITY_VARIANTS)),
-        ),
         # 表格里的 store_name 已是 btrim 后的值，这里精确匹配即可（非模糊）
         sql.SQL("btrim({}) = %s").format(sql.Identifier(store_col)),
         sql.SQL("{} >= %s").format(sql.Identifier(date_col)),
         sql.SQL("{} <= %s").format(sql.Identifier(date_col)),
     ]
-    params: list = [*FIXED_CITY_VARIANTS, store_name.strip(), date_from, date_to]
+    params: list = [store_name.strip(), date_from, date_to]
 
     product_list = _parse_list(products)
     if product_list:

@@ -263,6 +263,76 @@ def supports_store_ability(db_key: str) -> bool:
     return db_key in STORE_ABILITY_DB_KEYS
 
 
+def supports_store_type(db_key: str) -> bool:
+    """该库是否支持按「连锁/加盟」拆分（数据表含 大区/营运区 列即支持，大参林满足）。"""
+    cfg = SCHEMAS.get(db_key)
+    if not cfg:
+        return False
+    cols = [c[0] for c in cfg["columns"]]
+    return "大区" in cols and "营运区" in cols
+
+
 def get_store_ability_city() -> str:
     """门店能力分析当前固定的城市。"""
     return STORE_ABILITY_CITY
+
+
+# ---------- 门店库存（本期仅大参林） ----------
+# 库存是「当天快照」：每次导入都是一份完整的最新文件，全量覆盖写入（见 routers/inventory.py）。
+INVENTORY_DB_KEYS = ("dashenlin",)
+INVENTORY_TABLE = "inventory"
+
+# 库存表列定义（与「门店库存」Excel 表头一致）。
+# 注意「有效期至」按 TEXT 存：ISO 字符串（YYYY-MM-DD）可直接比较大小判断效期，
+# 同时避免 '2028-02-30' 这类脏数据让日期解析整批失败。
+INVENTORY_COLUMNS = [
+    ("日期", "DATE"),
+    ("公司", "TEXT"),
+    ("来源公司", "TEXT"),
+    ("商品编码", "TEXT"),
+    ("商品名称", "TEXT"),
+    ("规格", "TEXT"),
+    ("单位", "TEXT"),
+    ("省份", "TEXT"),
+    ("城市", "TEXT"),
+    ("门店编码", "TEXT"),
+    ("门店名称", "TEXT"),
+    ("门店详细名称", "TEXT"),
+    ("数量", "INTEGER"),
+    ("批准文号", "TEXT"),
+    ("生产厂家", "TEXT"),
+    ("生产日期", "DATE"),
+    ("有效期至", "TEXT"),
+    ("批号", "TEXT"),
+    ("营运区", "TEXT"),
+    ("大区", "TEXT"),
+]
+
+INVENTORY_INDEXES = [
+    ("idx_inventory_date", ["日期"]),
+    ("idx_inventory_store", ["门店编码"]),
+    ("idx_inventory_product", ["商品编码"]),
+    ("idx_inventory_city", ["城市"]),
+    ("idx_inventory_province", ["省份"]),
+]
+
+# 逻辑字段 → 库存表列名（供候选下拉 / 查询过滤复用，与销售表的 field_map 对应）
+INVENTORY_FIELD_COL = {
+    "city": "城市",
+    "province": "省份",
+    "product": "商品编码",
+    "store": "门店名称",
+}
+
+
+def get_inventory_table() -> str:
+    return INVENTORY_TABLE
+
+
+def inventory_columns() -> list:
+    return [c for c, _ in INVENTORY_COLUMNS]
+
+
+def supports_inventory(db_key: str) -> bool:
+    """该库是否开放「库存管理 / 动销率 / 库存情况查询」。"""
+    return db_key in INVENTORY_DB_KEYS

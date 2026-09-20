@@ -19,25 +19,23 @@
 
         <div class="filter-group">
           <label class="filter-label">门店名称（可留空，默认全部；多个用英文逗号分隔）</label>
-          <el-input
+          <KeywordSelect
             v-model="storeKeyword"
-            placeholder="例: 花都花山,海明路"
-            clearable
-            size="default"
-            style="width: 260px"
-            @keyup.enter="handleQuery"
+            :db-key="dbKey"
+            field="store"
+            placeholder="输入门店名关键词，如 花山"
+            width="260px"
           />
         </div>
 
         <div class="filter-group">
           <label class="filter-label">品类 / 商品编码（可留空，默认全部；多个用英文逗号分隔）</label>
-          <el-input
+          <KeywordSelect
             v-model="products"
-            placeholder="例: 1058746,1086127"
-            clearable
-            size="default"
-            style="width: 260px"
-            @keyup.enter="handleQuery"
+            :db-key="dbKey"
+            field="product"
+            placeholder="输入编码或名称关键词"
+            width="260px"
           />
         </div>
 
@@ -48,6 +46,37 @@
             <el-option label="前 100 家" :value="100" />
             <el-option label="前 200 家" :value="200" />
           </el-select>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">门店类型</label>
+          <el-radio-group v-model="storeType" size="default">
+            <el-radio-button value="all">全部</el-radio-button>
+            <el-radio-button value="chain">连锁</el-radio-button>
+            <el-radio-button value="franchise">加盟</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">城市（可留空=全部；多个用英文逗号分隔）</label>
+          <KeywordSelect
+            v-model="cities"
+            :db-key="dbKey"
+            field="city"
+            placeholder="输入城市关键词，如 广州"
+            width="220px"
+          />
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">省份（可留空=全部；多个用英文逗号分隔）</label>
+          <KeywordSelect
+            v-model="provinces"
+            :db-key="dbKey"
+            field="province"
+            placeholder="输入省份关键词，如 广东"
+            width="220px"
+          />
         </div>
 
         <div class="filter-group filter-actions">
@@ -65,7 +94,7 @@
             <el-icon><RefreshRight /></el-icon> 重置
           </el-button>
           <el-button type="success" :loading="exporting" @click="handleExport">
-            <el-icon><Download /></el-icon> 导出Excel
+            <el-icon><Download /></el-icon> 导出CSV
           </el-button>
         </div>
       </div>
@@ -206,15 +235,18 @@ import {
   exportStoreAbility,
   fetchStoreAbilityLatestRange,
   downloadBlob,
+  DOWNLOAD_DISABLED,
   type StoreAbilityResponse,
   type StoreAbilityStore,
   type StoreAbilityCategory,
   type StoreAbilityLatestRange,
 } from '@/api/client'
 import { getCurrentMonthRange } from '@/utils/date'
+import { requireAdmin, requirePermission } from '@/utils/auth'
 import { logger } from '@/utils/logger'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
+import KeywordSelect from '../KeywordSelect.vue'
 
 const props = defineProps<{
   dbKey: string
@@ -241,6 +273,11 @@ const dateRange = ref<[string, string]>(defaultRange())
 const storeKeyword = ref('')
 const products = ref('')
 const topN = ref(100)
+/** 门店类型：all=全部，chain=连锁(直营)，franchise=加盟（仅支持库生效） */
+const storeType = ref<'all' | 'chain' | 'franchise'>('all')
+/** 地域筛选：城市 / 省份 英文逗号分隔，留空=全部；默认广州维持历史口径 */
+const cities = ref('广州')
+const provinces = ref('')
 
 // 进入页面即拉取最新月份，把默认时间范围对齐到「数据最新月份」而非系统当月，
 // 避免数据滞后时默认区间查出来是空的。
@@ -263,6 +300,11 @@ const mapManagerVisible = ref(false)
 // 切换开关：持久化偏好；已有结果时自动按新口径重查
 watch(mapNames, (v) => {
   saveMapPref(v)
+  if (stores.value.length > 0) handleQuery()
+})
+
+// 切换门店类型：已有结果时自动按新口径重查
+watch(storeType, () => {
   if (stores.value.length > 0) handleQuery()
 })
 
@@ -325,6 +367,9 @@ async function handleQuery() {
       products: products.value || undefined,
       top_n: topN.value,
       map_names: mapNames.value,
+      store_type: storeType.value,
+      cities: cities.value || undefined,
+      provinces: provinces.value || undefined,
     })
     summary.value = res.summary
     stores.value = res.stores
@@ -345,11 +390,16 @@ function handleReset() {
   storeKeyword.value = ''
   products.value = ''
   topN.value = 100
+  storeType.value = 'all'
+  cities.value = '广州'
+  provinces.value = ''
   stores.value = []
   summary.value = { store_count: 0, total_qty: 0, returned: 0, top_n: 100 }
 }
 
 async function handleExport() {
+  if (DOWNLOAD_DISABLED) return
+  if (!requirePermission('export', '导出统计数据')) return
   if (stores.value.length === 0) {
     ElMessage.warning('请先执行统计后再导出')
     return
@@ -363,10 +413,13 @@ async function handleExport() {
       products: products.value || undefined,
       top_n: topN.value,
       map_names: mapNames.value,
+      store_type: storeType.value,
+      cities: cities.value || undefined,
+      provinces: provinces.value || undefined,
     })
     const from = dateRange.value?.[0] || 'all'
     const to = dateRange.value?.[1] || 'all'
-    downloadBlob(blob, `门店能力分析_${city.value}_${from}_${to}.xlsx`)
+    downloadBlob(blob, `门店能力分析_${city.value}_${from}_${to}.csv`)
     ElMessage.success('导出完成')
   } catch (e: any) {
     ElMessage.error('导出失败: ' + e.message)

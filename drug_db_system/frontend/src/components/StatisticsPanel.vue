@@ -46,6 +46,23 @@
           v-else-if="activeFunc === 'store_ability'"
           :db-key="dbKey"
         />
+        <AiAgentPanel
+          v-else-if="activeFunc === 'ai_agent'"
+          :db-key="dbKey"
+        />
+        <BoxCountStats
+          v-else-if="activeFunc === 'amount'"
+          :db-key="dbKey"
+          mode="amount"
+        />
+        <ProductMapPanel
+          v-else-if="activeFunc === 'product_map'"
+          :db-key="dbKey"
+        />
+        <TurnoverInventory
+          v-else-if="activeFunc === 'turnover_inventory'"
+          :db-key="dbKey"
+        />
       </section>
     </div>
   </el-drawer>
@@ -53,11 +70,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { Shop, TrendCharts, Box, Trophy } from '@element-plus/icons-vue'
+import { Shop, TrendCharts, Trophy, MagicStick, Money, Notebook, DataAnalysis } from '@element-plus/icons-vue'
 import StoreCityStats from './stats/StoreCityStats.vue'
 import BoxCountStats from './stats/BoxCountStats.vue'
 import SalesTrendStats from './stats/SalesTrendStats.vue'
 import StoreAbilityStats from './stats/StoreAbilityStats.vue'
+import AiAgentPanel from './stats/AiAgentPanel.vue'
+import ProductMapPanel from './stats/ProductMapPanel.vue'
+import TurnoverInventory from './stats/TurnoverInventory.vue'
 import { getDbConfig } from '@/utils/dbConfig'
 
 const props = defineProps<{
@@ -76,10 +96,13 @@ const drawerVisible = computed({
 
 /** 门店能力分析是否对当前库开放（本期仅大参林，由后端 meta 下发开关） */
 const abilityEnabled = ref(false)
+/** 库存管理 / 动销率 / 库存情况查询 是否对当前库开放（本期仅大参林） */
+const inventoryEnabled = ref(false)
 
 async function loadAbilityFlag() {
   const cfg = await getDbConfig(props.dbKey)
   abilityEnabled.value = cfg?.supports_store_ability ?? false
+  inventoryEnabled.value = cfg?.supports_inventory ?? false
 }
 
 const menuItems = computed(() => {
@@ -108,6 +131,32 @@ const menuItems = computed(() => {
       icon: TrendCharts,
     },
   ]
+  items.push({
+    key: 'amount',
+    name: '实销金额统计',
+    desc: '盒数×开票价 · 万元展示',
+    icon: Money,
+  })
+  items.push({
+    key: 'product_map',
+    name: '品类映射表',
+    desc: '编码→中文名 · 开票价维护',
+    icon: Notebook,
+  })
+  if (inventoryEnabled.value) {
+    items.push({
+      key: 'turnover_inventory',
+      name: '动销率库存情况',
+      desc: '实销门店数 ÷ 库存门店数 · 库存量/效期货',
+      icon: DataAnalysis,
+    })
+  }
+  items.push({
+    key: 'ai_agent',
+    name: 'AI 代理',
+    desc: '智能问数 · 内测预览',
+    icon: MagicStick,
+  })
   if (abilityEnabled.value) {
     items.push({
       key: 'store_ability',

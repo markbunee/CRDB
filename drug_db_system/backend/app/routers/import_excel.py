@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Excel 导入接口：上传 Excel，按日期覆盖同日期旧数据，然后 COPY 批量写入。
+"""数据导入接口：上传 Excel / CSV，按日期覆盖同日期旧数据，然后 COPY 批量写入。
+
+支持格式：``.xlsx`` / ``.xls`` / ``.csv``（推荐 CSV——解析比 xlsx 快得多、内存也更省，
+本系统导出的 CSV 可以直接原样再导回来）。
 
 性能优化要点：
-1. 优先使用 calamine 引擎读取 xlsx，比 openpyxl 快 5~20 倍
+1. CSV 用 pandas C 引擎解析（``dtype=str`` 保留「00123」这类前导零编码）；
+   xlsx 优先 calamine 引擎，比 openpyxl 快 5~20 倍
 2. 日期/数值列使用向量化处理，避免 iterrows 逐行遍历
 3. 使用 DataFrame.to_csv() 生成 COPY 数据，比 Python csv.writer 快得多
 4. 删除旧数据后一次性 COPY，导入完成后不再重新连接 COUNT
@@ -12,23 +16,59 @@ import io
 from typing import Dict, List, Set, Tuple
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from psycopg2 import sql
 
-from ..dependencies import validate_db_key
+from ..dependencies import validate_db_key, require_admin, require_permission
 from ..logger import get_logger
+from ..memory_guard import assert_memory_available, MemoryPressureError
+from ..services.export_gate import ExportRejected, export_slot
 from ..models.schema_def import get_cfg, col_names, date_columns
 from ..services.data_import import parse_dates_vectorized, prepare_for_copy
 from ..database import get_conn
+from ..routers.dashboard import invalidate_dashboard_cache
+from ..routers.filter_options import invalidate_filter_options_cache
 
-router = APIRouter(prefix="/api/{db_key}", tags=["import"])
+# 导入会覆盖/写入业务数据，整组接口仅管理员可用
+router = APIRouter(
+    prefix="/api/{db_key}", tags=["import"], dependencies=[Depends(require_permission("import"))]
+)
 logger = get_logger("app.routers.import_excel")
 
 
+def _read_csv_bytes(content: bytes) -> pd.DataFrame:
+    """读取 CSV 字节流：先按 UTF-8（兼容 BOM）再退回 GB18030（Windows Excel 另存为）。
+
+    ``dtype=str`` 是关键：CSV 没有类型信息，若交给 pandas 推断，
+    「商品编码 00123」会被吃成 123、长条码会被转成科学计数法。
+    全部按字符串读入，后续由 ``prepare_for_copy`` 统一做日期/数值归一。
+    """
+    last_error: Exception | None = None
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return pd.read_csv(
+                io.BytesIO(content),
+                dtype=str,
+                keep_default_na=False,
+                encoding=encoding,
+                low_memory=False,
+            )
+        except UnicodeDecodeError as e:  # 编码不对，换下一个
+            last_error = e
+    raise last_error if last_error else ValueError("CSV 解析失败")
+
+
 def _read_upload_file(file: UploadFile) -> pd.DataFrame:
-    """读取上传的 Excel/CSV 文件为 DataFrame，优先使用 calamine 引擎。"""
+    """读取上传的 Excel / CSV 文件为 DataFrame。
+
+    - ``.csv`` / ``.txt``：走 CSV 分支（快、省内存，推荐）
+    - 其它（``.xlsx`` / ``.xls``）：优先 calamine 引擎，失败再退回默认引擎
+    """
+    name = (file.filename or "").lower()
     try:
         content = file.file.read()
+        if name.endswith((".csv", ".txt")):
+            return _read_csv_bytes(content)
         try:
             df = pd.read_excel(io.BytesIO(content), sheet_name=0, engine='calamine')
         except Exception:
@@ -74,6 +114,16 @@ def _import_single_excel(
         df = _read_upload_file(file)
     except Exception as e:
         result["error"] = f"无法读取 Excel 文件: {e}"
+        return result
+
+    # 【内存安全护栏·事中】Excel 已整表读入内存，若此时系统已触顶则中止，
+    # 避免继续 prepare_for_copy / COPY 把内存撑爆（2 核 2G 设备尤其关键）。
+    try:
+        assert_memory_available("Excel导入")
+    except MemoryPressureError as e:
+        result["success"] = False
+        result["error"] = f"导入被内存安全护栏拦截：{e}"
+        logger.warning("导入 %s 因内存护栏中止: %s", db_key, e)
         return result
 
     excel_count = len(df)
@@ -192,32 +242,55 @@ def _import_single_excel(
 @router.post("/rows/import_excel")
 def import_excel(
     db_key: str = validate_db_key,
+    user: dict = Depends(require_permission("import")),
     file: UploadFile = File(...),
     overwrite_existing: bool = Form(True),
 ):
-    """上传单个 Excel 文件，可选择按日期覆盖同日期旧数据并批量导入。"""
-    result = _import_single_excel(db_key, file, overwrite_existing)
+    """上传单个 Excel / CSV 文件，可选择按日期覆盖同日期旧数据并批量导入。"""
+    try:
+        with export_slot(user.get("id"), f"{db_key}/import"):
+            result = _import_single_excel(db_key, file, overwrite_existing)
+    except ExportRejected as e:
+        # 导入与导出同属重负载操作，共用闸门：并发满时直接 429，避免把数据库打满
+        raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
     if not result["success"]:
         raise HTTPException(400, result["error"])
+    invalidate_dashboard_cache(db_key)
+    invalidate_filter_options_cache(db_key)
     return result
 
 
 @router.post("/rows/import_excel_batch")
 def import_excel_batch(
     db_key: str = validate_db_key,
-    files: List[UploadFile] = File(..., description="多个 Excel 文件，后台会排队依次处理"),
+    user: dict = Depends(require_permission("import")),
+    files: List[UploadFile] = File(..., description="多个 Excel / CSV 文件，后台会排队依次处理"),
     overwrite_existing: bool = Form(True, description="是否按日期覆盖旧数据"),
 ):
-    """批量上传多个 Excel 文件，按顺序排队处理。
+    """批量上传多个 Excel / CSV 文件，按顺序排队处理。
 
     说明：
     - 文件会按上传顺序逐个处理，每个文件独立事务
     - 若多文件包含相同日期且 overwrite_existing=True，后处理的文件会覆盖先处理的文件
     - 任意文件失败会记录错误，其余文件继续处理；接口返回每个文件的结果列表
+    - 整体占用一个「重负载名额」：文件越多耗时越长，注意 Nginx 读超时（默认 600s）
     """
     if not files:
         raise HTTPException(400, "未上传任何文件")
 
+    try:
+        with export_slot(user.get("id"), f"{db_key}/import_batch"):
+            return _import_batch_inner(db_key, files, overwrite_existing)
+    except ExportRejected as e:
+        raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
+
+
+def _import_batch_inner(
+    db_key: str,
+    files: List[UploadFile],
+    overwrite_existing: bool,
+) -> Dict[str, any]:
+    """批量导入主体（放在闸门内执行）。"""
     file_results: List[Dict[str, any]] = []
     total_inserted = 0
     total_deleted = 0
@@ -234,6 +307,10 @@ def import_excel_batch(
             success_count += 1
         else:
             failed_count += 1
+
+    if success_count > 0:
+        invalidate_dashboard_cache(db_key)
+        invalidate_filter_options_cache(db_key)
 
     has_failure = failed_count > 0
     status_code = 207 if has_failure else 200
