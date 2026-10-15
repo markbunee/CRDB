@@ -12,3 +12,24 @@ deploy/crdb-vhost.conf
 # Python
 __pycache__/
 *.py[cod]
+
+# ============================================================
+# Node（pi / ai-bridge）
+# ============================================================
+# 依赖与构建产物一律不入库（任何层级）
+node_modules/
+
+# ---------- pi：上游开源源码，**整目录入库** ----------
+# pi/ 是 ai-bridge 的上游依赖源码，包含源码才能在新机器上构建出 pi 打包产物，
+# 因此 pi 的 .ts/.md/.json 等**源码要提交**。
+# 下面这些是「跑起来才会生成」的东西，明确排除（pi/.gitignore 已有同样的规则，
+# 这里再兜一层：万一将来 pi 被整体替换/其 .gitignore 丢失，也不至于把产物提交上去）。
+drug_db_system/pi/.artifacts/
+drug_db_system/pi/packages/ai/src/providers/data/
+drug_db_system/pi/**/dist/
+drug_db_system/pi/**/*.tsbuildinfo
+
+# ---------- ai-bridge：本项目的桥梁代码，**源码入库** ----------
+# 依赖与编译产物不入库（ai-bridge 没有自己的 .gitignore，必须写在这里）
+drug_db_system/ai-bridge/node_modules/
+drug_db_system/ai-bridge/dist/
