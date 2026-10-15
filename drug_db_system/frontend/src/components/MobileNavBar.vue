@@ -47,11 +47,14 @@ defineEmits<{
   bottom: 0;
   z-index: 2000;
   display: none; /* 仅手机端显示，见媒体查询 */
-  height: 56px;
+  /* 56 → 62：与移动端设计稿一致，触控区更舒适。
+     安全区用 min-height 追加，避免 padding 吃掉导航项高度 */
+  height: auto;
+  min-height: calc(62px + env(safe-area-inset-bottom, 0px));
   padding-bottom: env(safe-area-inset-bottom, 0);
   background: #fff;
   border-top: 1px solid #e4e7ed;
-  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.08);
 }
 
 .nav-item {

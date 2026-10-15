@@ -64,6 +64,7 @@ import { Plus } from '@element-plus/icons-vue'
 import {
   fetchProductMap,
   saveProductMap,
+  invalidateDashboardCache,
   type ProductMapItem,
 } from '@/api/client'
 import { logger } from '@/utils/logger'
@@ -123,6 +124,8 @@ async function handleSave() {
   try {
     await saveProductMap(props.dbKey, items)
     ElMessage.success(`已保存 ${items.length} 条映射`)
+    // 开票价影响看板金额口径，失效其静态缓存以便下次打开重新计算
+    invalidateDashboardCache()
     visible.value = false
     emit('saved')
   } catch (e: any) {

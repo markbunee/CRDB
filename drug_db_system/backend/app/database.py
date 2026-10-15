@@ -13,7 +13,7 @@ from psycopg2 import pool
 
 from .config import (
     PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_ADMIN_DB,
-    POOL_MIN, POOL_MAX, DB_NAMES, conn_params,
+    POOL_MIN, POOL_MAX, DB_NAMES, conn_params, QUERY_STATEMENT_TIMEOUT_MS,
 )
 
 
@@ -54,6 +54,17 @@ class DatabasePools:
             conn.autocommit = readonly
             if readonly:
                 conn.set_session(readonly=True)
+                # 语句超时：让跑飞的慢查询（如全表扫描）由 PG 主动杀掉，
+                # 避免单条查询长时间占满连接/CPU。autocommit 下 SET 立即生效。
+                if QUERY_STATEMENT_TIMEOUT_MS > 0:
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SET statement_timeout = %s",
+                                (QUERY_STATEMENT_TIMEOUT_MS,),
+                            )
+                    except Exception:
+                        pass
             yield conn
             # 非只读连接：上下文正常退出时自动提交
             if not readonly and not conn.closed:
@@ -67,7 +78,13 @@ class DatabasePools:
                     pass
             raise
         finally:
-            # 归还前恢复默认会话设置
+            # 归还前恢复默认会话设置（清掉只读与语句超时，避免污染后续复用）
+            try:
+                if readonly and QUERY_STATEMENT_TIMEOUT_MS > 0:
+                    with conn.cursor() as cur:
+                        cur.execute("SET statement_timeout = 0")
+            except Exception:
+                pass
             try:
                 conn.set_session(readonly=False)
             except Exception:

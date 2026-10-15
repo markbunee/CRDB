@@ -28,6 +28,7 @@ from psycopg2 import sql
 from ..dependencies import get_current_user, validate_db_key
 from ..database import get_conn
 from ..logger import get_logger
+from ..routers.filter_options import invalidate_filter_options_cache
 from ..services.export_gate import ExportRejected, export_slot
 from ..models.schema_def import (
     INVENTORY_COLUMNS,
@@ -77,6 +78,29 @@ def _add_months(date_str: str, months: int) -> str:
     return f"{y:04d}-{m:02d}-{day:02d}"
 
 
+def _month_list(from_ym: str, to_ym: str) -> List[str]:
+    """含端点的 YYYY-MM 列表。"""
+    out: List[str] = []
+    if not from_ym or not to_ym:
+        return out
+    y, m = int(from_ym[:4]), int(from_ym[5:7])
+    y2, m2 = int(to_ym[:4]), int(to_ym[5:7])
+    while (y, m) <= (y2, m2):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def _last_day(ym: str) -> str:
+    """YYYY-MM 的月末日期 YYYY-MM-DD。"""
+    y, m = int(ym[:4]), int(ym[5:7])
+    d = calendar.monthrange(y, m)[1]
+    return f"{y:04d}-{m:02d}-{d:02d}"
+
+
 def _ensure_table(db_key: str) -> str:
     """库存表不存在则建表 + 建索引（幂等，任何读接口前调用）。"""
     table = get_inventory_table()
@@ -115,6 +139,16 @@ def _store_type_expr() -> sql.Composable:
         "CASE WHEN {daqu} LIKE '%%加盟%%' OR {yingyun} LIKE '%%加盟%%' "
         "THEN '加盟' ELSE '连锁' END"
     ).format(daqu=sql.Identifier("大区"), yingyun=sql.Identifier("营运区"))
+
+
+def _city_label(v) -> str:
+    """城市为空（脏数据）统一归为「未知」。
+
+    销售表里存在少量「城市 IS NULL」的行，若直接进 dict 再 sorted()，
+    Python 无法比较 None 与 str（`TypeError: '<' not supported between
+    instances of 'NoneType' and 'str'`），整个接口会 500。
+    """
+    return v or "未知"
 
 
 def _inv_where(
@@ -461,7 +495,7 @@ def inventory_turnover(
                 ),
                 s_params,
             )
-            sales_by_city = {r["city"]: int(r["n"] or 0) for r in _rows(cur)}
+            sales_by_city = {_city_label(r["city"]): int(r["n"] or 0) for r in _rows(cur)}
 
             cur.execute(
                 sql.SQL(
@@ -474,7 +508,7 @@ def inventory_turnover(
                 ),
                 i_params,
             )
-            inv_by_city = {r["city"]: int(r["n"] or 0) for r in _rows(cur)}
+            inv_by_city = {_city_label(r["city"]): int(r["n"] or 0) for r in _rows(cur)}
 
     by_city = []
     for city in sorted(set(sales_by_city) | set(inv_by_city)):
@@ -498,6 +532,204 @@ def inventory_turnover(
         "inventory_stores": inv_stores,
         "turnover_rate": round(sales_stores / inv_stores * 100, 2) if inv_stores else None,
         "by_city": by_city,
+    }
+
+
+# ---------- 动销率 月度 ----------
+@router.get("/inventory/turnover/monthly")
+def inventory_turnover_monthly(
+    db_key: str = validate_db_key,
+    date_from: Optional[str] = Query(None, description="销售区间开始 YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="销售区间结束 YYYY-MM-DD"),
+    cities: Optional[str] = Query(None),
+    provinces: Optional[str] = Query(None),
+    products: Optional[str] = Query(None),
+    store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
+):
+    """动销率 按月趋势。
+
+    - 动销率(月) = 当月实销门店数(去重) ÷ 库存门店数(去重)。
+      **分母统一取最新一次库存快照**：库存是「当天快照、导入即全量覆盖」，表里没有历史库存，
+      若按「不晚于该月月末」回溯，快照月之前的所有月份分母都会是 0 → 动销率全为空。
+    同时返回整体汇总（whole-range）与分城市明细（按最近一次库存快照）。
+    """
+    _check_support(db_key)
+    fm = get_field_map(db_key)
+    cfg = get_cfg(db_key)
+    if not fm:
+        raise HTTPException(400, f"该库不支持统计: {db_key}")
+    inv_table = _ensure_table(db_key)
+
+    plist = _parse_list(products)
+    clist = _parse_list(cities)
+    pvlist = _parse_list(provinces)
+
+    # 区间缺失时取销售表月范围
+    if not date_from or not date_to:
+        with get_conn(db_key) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("SELECT MIN({m}), MAX({m}) FROM {t}").format(
+                        m=sql.Identifier(fm["month_col"]), t=sql.Identifier(cfg["table"])
+                    )
+                )
+                mn, mx = cur.fetchone()
+        date_from = (str(mn) + "-01") if mn else None
+        date_to = (str(mx) + "-01") if mx else None
+    if not date_from or not date_to:
+        return {
+            "date_from": None, "date_to": None, "months": [],
+            "overall": None, "by_city": [], "note": "无销售数据",
+        }
+    months = _month_list(date_from[:7], date_to[:7])
+
+    s_where, s_params = _sales_where(fm, date_from, date_to, plist, clist, pvlist, db_key, store_type)
+    i_where, i_params = _inv_where(None, plist, clist, pvlist, [], store_type)
+
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            # 分子：销售表逐月去重门店
+            cur.execute(
+                sql.SQL(
+                    "SELECT to_char({d}, 'YYYY-MM') AS ym, COUNT(DISTINCT {s}) AS n "
+                    "FROM {t}{w} GROUP BY ym"
+                ).format(
+                    d=sql.Identifier(fm["date_col"]),
+                    s=sql.Identifier(fm["store_col"]),
+                    t=sql.Identifier(cfg["table"]),
+                    w=s_where,
+                ),
+                s_params,
+            )
+            sales_by_month = {r["ym"]: int(r["n"] or 0) for r in _rows(cur)}
+
+            # 区间销售去重门店总数（整体实销门店）
+            cur.execute(
+                sql.SQL("SELECT COUNT(DISTINCT {s}) AS n FROM {t}{w}").format(
+                    s=sql.Identifier(fm["store_col"]),
+                    t=sql.Identifier(cfg["table"]),
+                    w=s_where,
+                ),
+                s_params,
+            )
+            sales_stores_total = int(_rows(cur)[0]["n"] or 0)
+
+            # 库存可选快照日期
+            cur.execute(
+                sql.SQL("SELECT DISTINCT {d} FROM {t} ORDER BY {d}").format(
+                    d=sql.Identifier(COL_DATE), t=sql.Identifier(inv_table)
+                )
+            )
+            inv_dates = [r.strftime("%Y-%m-%d") for r, in cur.fetchall()]
+
+            # 分母：库存按快照日期去重门店；无过滤时补 1=1 让 AND 语法成立
+            where_clause = i_where
+            # 判空必须用 as_string()：psycopg2 的 Composed 用 str() 会得到 "SQL('')"
+            # 这类 repr 文本（永远为真），导致空条件没被补成 WHERE 1=1，
+            # 拼出 "FROM inventory AND ..." 的语法错误 → 接口 500。
+            if not where_clause.as_string(None).strip():
+                where_clause = sql.SQL(" WHERE 1=1")
+            inv_by_date: Dict[str, int] = {}
+            inv_city_by_date: Dict[Tuple[str, str], int] = {}
+            if inv_dates:
+                ph = sql.SQL(", ").join(sql.Placeholder() * len(inv_dates))
+                cur.execute(
+                    sql.SQL(
+                        "SELECT {d} AS inv_date, COUNT(DISTINCT {s}) AS n "
+                        "FROM {t}{w} AND {d} IN ({ph}) GROUP BY inv_date"
+                    ).format(
+                        d=sql.Identifier(COL_DATE),
+                        s=sql.Identifier(COL_STORE),
+                        t=sql.Identifier(inv_table),
+                        w=where_clause,
+                        ph=ph,
+                    ),
+                    i_params + inv_dates,
+                )
+                for r in _rows(cur):
+                    inv_by_date[str(r["inv_date"])] = int(r["n"] or 0)
+                cur.execute(
+                    sql.SQL(
+                        "SELECT {d} AS inv_date, {c} AS city, COUNT(DISTINCT {s}) AS n "
+                        "FROM {t}{w} AND {d} IN ({ph}) GROUP BY inv_date, city"
+                    ).format(
+                        d=sql.Identifier(COL_DATE),
+                        c=sql.Identifier(COL_CITY),
+                        s=sql.Identifier(COL_STORE),
+                        t=sql.Identifier(inv_table),
+                        w=where_clause,
+                        ph=ph,
+                    ),
+                    i_params + inv_dates,
+                )
+                for r in _rows(cur):
+                    inv_city_by_date[(str(r["inv_date"]), _city_label(r["city"]))] = int(r["n"] or 0)
+
+            # 分城市（销售 whole-range）
+            cur.execute(
+                sql.SQL("SELECT {c} AS city, COUNT(DISTINCT {s}) AS n FROM {t}{w} GROUP BY {c}").format(
+                    c=sql.Identifier(fm["city_col"]),
+                    s=sql.Identifier(fm["store_col"]),
+                    t=sql.Identifier(cfg["table"]),
+                    w=s_where,
+                ),
+                s_params,
+            )
+            sales_by_city = {_city_label(r["city"]): int(r["n"] or 0) for r in _rows(cur)}
+
+    # 库存是「当天快照、导入即全量覆盖」，表里始终只有最新一次导入的数据，不存在历史库存。
+    # 因此各月分母**统一取最新快照**：若沿用「不晚于该月月末」回溯，快照月之前的所有月份
+    # 都取不到库存（分母 0）→ 动销率全为空，跨月趋势就废了。
+    latest_inv = max(inv_dates) if inv_dates else None
+
+    month_rows = []
+    for ym in months:
+        s_n = sales_by_month.get(ym, 0)
+        inv_d = latest_inv
+        i_n = inv_by_date.get(inv_d, 0) if inv_d else 0
+        turnover = round(s_n / i_n * 100, 2) if i_n else None
+        month_rows.append(
+            {
+                "month": ym,
+                "inv_date": inv_d,
+                "sales_stores": s_n,
+                "inventory_stores": i_n,
+                "turnover_rate": turnover,
+            }
+        )
+
+    overall_inv = inv_by_date.get(latest_inv, 0) if latest_inv else 0
+    overall = {
+        "sales_stores": sales_stores_total,
+        "inventory_stores": overall_inv,
+        "turnover_rate": round(sales_stores_total / overall_inv * 100, 2) if overall_inv else None,
+        "inv_date": latest_inv,
+    }
+
+    inv_city_latest = {
+        c: n for (d, c), n in inv_city_by_date.items() if d == latest_inv
+    } if latest_inv else {}
+    by_city = []
+    for city in sorted(set(sales_by_city) | set(inv_city_latest)):
+        s_n = sales_by_city.get(city, 0)
+        i_n = inv_city_latest.get(city, 0)
+        by_city.append(
+            {
+                "city": city or "未知",
+                "sales_stores": s_n,
+                "inventory_stores": i_n,
+                "turnover_rate": round(s_n / i_n * 100, 2) if i_n else None,
+            }
+        )
+    by_city.sort(key=lambda x: (x["turnover_rate"] is None, -(x["turnover_rate"] or 0)))
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "months": month_rows,
+        "overall": overall,
+        "by_city": by_city,
+        "inv_dates": inv_dates,
     }
 
 
@@ -625,6 +857,9 @@ async def _inventory_import_inner(db_key: str, file: UploadFile) -> dict:
         conn.commit()
 
     logger.info("库存导入 %s：全量覆盖 %d 行", db_key, len(out))
+    # 库存候选值（门店/品类）来自库存表，导入即全量覆盖，必须失效候选缓存，
+    # 否则「刚导入的新门店/品类」在下拉里要等 TTL（默认 10 分钟）才出现（准确性优先）。
+    invalidate_filter_options_cache(db_key)
     return {
         "db_key": db_key,
         "inserted": len(out),

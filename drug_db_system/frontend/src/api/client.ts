@@ -40,6 +40,7 @@ export async function request<T>(
   path: string,
   params?: Record<string, any>,
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' = 'GET',
+  signal?: AbortSignal,
 ): Promise<T> {
   const url = new URL(API_BASE + path, window.location.origin)
   const init: RequestInit = { method }
@@ -54,6 +55,7 @@ export async function request<T>(
     headers['Content-Type'] = 'application/json'
     init.body = JSON.stringify(params)
   }
+  if (signal) init.signal = signal
   init.headers = headers
 
   const started = performance.now()
@@ -61,9 +63,20 @@ export async function request<T>(
     const res = await fetch(url.toString(), init)
     if (!res.ok) {
       const text = await res.text().catch(() => '请求失败')
+      // 429：查询/导出闸门拒绝（服务器繁忙），后端 detail 已是友好文案；
+      // 其它错误也尽量抽取 detail，避免把原始 JSON 直接甩给用户。
+      let detail = text
+      try {
+        const parsed = JSON.parse(text)
+        if (parsed?.detail) detail = parsed.detail
+      } catch {
+        /* 非 JSON，用原文 */
+      }
       handleAuthError(res.status, text)
-      logger.warn(`API ${res.status} ${path}: ${text}`, 'request')
-      throw new Error(text)
+      logger.warn(`API ${res.status} ${path}: ${detail}`, 'request')
+      const err: any = new Error(detail)
+      err.status = res.status
+      throw err
     }
     const cost = (performance.now() - started).toFixed(0)
     logger.info(`API ${path} -> ${res.status} (${cost}ms)`, 'request')
@@ -80,12 +93,6 @@ export interface RowResponse {
   page_size: number
   rows: Record<string, any>[]
   next_cursor?: number
-}
-
-export interface ClickStatsResponse {
-  total: number
-  date_range: { min: string | null; max: string | null }
-  daily: { day: string; count: number }[]
 }
 
 export interface DbMeta {
@@ -107,8 +114,23 @@ export interface DbMeta {
   supports_store_type?: boolean
 }
 
+// 三个公司视图都会拉取库元数据（含 row_count 角标），登录后基本不变。
+// 模块级缓存一次，避免每个视图挂载都重复请求；导入后调用 invalidateDbsCache() 刷新。
+let _dbsCache: Promise<DbMeta[]> | null = null
+
 export function fetchDbs() {
-  return request<DbMeta[]>('/api/dbs')
+  if (!_dbsCache) {
+    _dbsCache = request<DbMeta[]>('/api/dbs')
+    // 失败的请求不要永久占住缓存：一旦 rejected 立即允许下次重取
+    _dbsCache.catch(() => {
+      _dbsCache = null
+    })
+  }
+  return _dbsCache
+}
+
+export function invalidateDbsCache() {
+  _dbsCache = null
 }
 
 export function fetchRows(
@@ -125,24 +147,9 @@ export function fetchRows(
     cities?: string
     provinces?: string
   } = {},
+  signal?: AbortSignal,
 ) {
-  return request<RowResponse>(`/api/${dbKey}/rows`, options)
-}
-
-export function createRow(dbKey: string, body: Record<string, any>) {
-  return request<{ id: number; message: string }>(`/api/${dbKey}/rows`, body, 'POST')
-}
-
-export function upsertByDate(
-  dbKey: string,
-  date: string,
-  data: Record<string, any>,
-) {
-  return request<{ id: number; deleted: number; message: string }>(
-    `/api/${dbKey}/rows/upsert_by_date`,
-    { date, data },
-    'POST',
-  )
+  return request<RowResponse>(`/api/${dbKey}/rows`, options, 'GET', signal)
 }
 
 export function clearData(dbKey: string) {
@@ -221,21 +228,27 @@ export interface StatsLatestRange {
   max_date: string | null
 }
 
+// 「数据最新月份」在导入 / 清空之前不会变化，而多个统计子页（门店数 / 盒数 /
+// 销售趋势 / 动销率）每次挂载都会各自拉一次，切换统计功能时反复请求同一接口。
+// 这里做模块级缓存：同一库只请求一次；导入 / 清空后由视图调用
+// invalidateStatsLatestRangeCache() 失效，保证默认区间仍取到最新数据。
+const _latestRangeCache = new Map<string, Promise<StatsLatestRange>>()
+
 export function fetchStatsLatestRange(dbKey: string) {
-  return request<StatsLatestRange>(`/api/${dbKey}/stats/latest_range`)
+  let p = _latestRangeCache.get(dbKey)
+  if (!p) {
+    p = request<StatsLatestRange>(`/api/${dbKey}/stats/latest_range`)
+    // 失败不要永久占住缓存：一旦 rejected 立即允许下次重取
+    p.catch(() => {
+      _latestRangeCache.delete(dbKey)
+    })
+    _latestRangeCache.set(dbKey, p)
+  }
+  return p
 }
 
-export function fetchClickStats(
-  dbKey: string,
-  options: {
-    date_from?: string
-    date_to?: string
-    product_codes?: string
-    cities?: string
-    provinces?: string
-  } = {},
-) {
-  return request<ClickStatsResponse>(`/api/${dbKey}/stats/click`, options)
+export function invalidateStatsLatestRangeCache() {
+  _latestRangeCache.clear()
 }
 
 // ---------- 筛选候选值（模糊查询，供统计各子功能下拉使用） ----------
@@ -335,6 +348,37 @@ export interface TurnoverResponse {
   by_city: TurnoverCityRow[]
 }
 
+/** 动销率 月度：单月一行 */
+export interface TurnoverMonthlyMonth {
+  /** YYYY-MM */
+  month: string
+  /** 该月采用的库存快照日期 YYYY-MM-DD（各月统一取最新一次快照：库存无历史版本） */
+  inv_date: string | null
+  /** 当月实销门店数（去重） */
+  sales_stores: number
+  /** 当月库存门店数（去重，按 inv_date 快照） */
+  inventory_stores: number
+  /** 动销率 % = 实销门店数 ÷ 库存门店数 × 100 */
+  turnover_rate: number | null
+}
+
+export interface TurnoverMonthlyOverall {
+  sales_stores: number
+  inventory_stores: number
+  turnover_rate: number | null
+  inv_date: string | null
+}
+
+export interface TurnoverMonthlyResponse {
+  date_from: string | null
+  date_to: string | null
+  months: TurnoverMonthlyMonth[]
+  overall: TurnoverMonthlyOverall | null
+  by_city: TurnoverCityRow[]
+  inv_dates?: string[]
+  note?: string
+}
+
 export interface InventoryImportResult {
   db_key: string
   inserted: number
@@ -383,6 +427,22 @@ export function fetchInventoryTurnover(
   return request<TurnoverResponse>(`/api/${dbKey}/inventory/turnover`, options)
 }
 
+/** 动销率 按月趋势 */
+export function fetchInventoryTurnoverMonthly(
+  dbKey: string,
+  options: {
+    date_from?: string
+    date_to?: string
+    cities?: string
+    provinces?: string
+    products?: string
+    /** 门店类型：all=全部；chain=连锁(直营)；franchise=加盟 */
+    store_type?: 'all' | 'chain' | 'franchise'
+  } = {},
+) {
+  return request<TurnoverMonthlyResponse>(`/api/${dbKey}/inventory/turnover/monthly`, options)
+}
+
 /** 导入库存 Excel（全量覆盖）：库存是当天快照，每次更新都是完整最新文件 */
 export function importInventory(
   dbKey: string,
@@ -406,9 +466,13 @@ export function importInventory(
   })
 }
 
-// ---------- 门店数统计（通用三维度） ----------
+// ---------- 门店数统计（通用维度） ----------
 
-export type StoreCountDimension = 'city' | 'product' | 'time'
+/**
+ * province = 省份维度：省份拆表、行=省内城市、列=品类（原省份模式的「省 → 市」展开视图，
+ * 已与地域级别开关解耦为独立维度）。仅支持省份的库（如大参林）可选。
+ */
+export type StoreCountDimension = 'city' | 'product' | 'time' | 'province'
 export type StoreCountRegion = 'city' | 'province'
 
 export interface StoreCountCellRow {
@@ -423,6 +487,8 @@ export interface StoreCountTable {
   col_header: string
   row_keys: string[]
   col_keys: string[]
+  /** 注意：门店数是去重计数（COUNT DISTINCT 门店），不可加，
+   *  故后端不产出 total / col_totals / grand_total / footer，界面也不显示合计。 */
   rows: StoreCountCellRow[]
 }
 
@@ -467,6 +533,7 @@ export function fetchStoreCount(
 export interface BoxCountCellRow {
   row_key: string
   cells: Record<string, number>
+  /** 行合计（该行各列之和） */
   total?: number
   yoy_total?: number
   yoy_pct?: number | null
@@ -482,6 +549,12 @@ export interface BoxCountTable {
   row_keys: string[]
   col_keys: string[]
   rows: BoxCountCellRow[]
+  /** 列合计（每列纵向求和），键为 col_keys */
+  col_totals?: Record<string, number>
+  /** 整表总计 */
+  grand_total?: number
+  /** 表尾「合计」行：形状与数据行完全一致（含同期/上月合计），前端复用同一套渲染 */
+  footer?: BoxCountCellRow
 }
 
 export interface BoxCountResponse {
@@ -528,22 +601,11 @@ export function fetchBoxCount(
   return request<BoxCountResponse>(`/api/${dbKey}/stats/box_count`, options)
 }
 
-// ---------- 统计结果导出（CSV） ----------
+// ---------- 导出 / 下载（CSV） ----------
 // 后端已把所有导出改为 CSV（比 xlsx 快 5~20 倍、内存恒定）：
 // 多张子表拼成一个文件，用首列「分组」区分原来的 sheet 名。
 // 导出接口受「导出闸门」保护：并发达上限或同一账号连点过快会返回 429（detail 里有提示）。
-
-export function downloadBlob(blob: Blob, filename: string) {
-  if (DOWNLOAD_DISABLED) return
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
+// 前端不再有同步导出：一律走异步导出任务（下载中心），取文件用 fetchBlobByPath()。
 
 async function _fetchBlob(path: string, params?: Record<string, any>): Promise<Blob> {
   const url = new URL(API_BASE + path, window.location.origin)
@@ -570,45 +632,9 @@ async function _fetchBlob(path: string, params?: Record<string, any>): Promise<B
   return res.blob()
 }
 
-export function exportStoreCount(
-  dbKey: string,
-  options: {
-    dimension?: StoreCountDimension
-    region_level?: StoreCountRegion
-    date_from?: string
-    date_to?: string
-    merge_months?: boolean
-    cities?: string
-    provinces?: string
-    products?: string
-    merge_cities?: boolean
-    merge_products?: boolean
-    map_names?: boolean
-  } = {},
-) {
-  return _fetchBlob(`/api/${dbKey}/stats/store_count/export`, options)
-}
-
-export function exportBoxCount(
-  dbKey: string,
-  options: {
-    dimension?: StoreCountDimension
-    region_level?: StoreCountRegion
-    date_from?: string
-    date_to?: string
-    merge_months?: boolean
-    cities?: string
-    provinces?: string
-    products?: string
-    merge_cities?: boolean
-    merge_products?: boolean
-    calc_yoy_mom?: boolean
-    map_names?: boolean
-    /** 与查询口径一致：boxes=盒数 | amount=实销金额（导出文件名随指标变化） */
-    metric?: 'boxes' | 'amount'
-  } = {},
-) {
-  return _fetchBlob(`/api/${dbKey}/stats/box_count/export`, options)
+/** 按路径直接拉取文件 Blob（异步导出任务「下载中心」取文件用，带令牌 + 429 文案解析） */
+export function fetchBlobByPath(path: string): Promise<Blob> {
+  return _fetchBlob(path)
 }
 
 // ---------- 门店能力分析（大参林 · 广州） ----------
@@ -740,6 +766,42 @@ export function exportStoreAbility(
   return _fetchBlob(`/api/${dbKey}/stats/store_ability/export`, options)
 }
 
+// ---------- 实销金额口径完整性（缺开票价会静默拉低金额） ----------
+
+export interface AmountCoverageItem {
+  code: string
+  name: string
+  /** 该品类在区间内的盒数（全部未计入金额） */
+  qty: number
+}
+
+export interface AmountCoverageResponse {
+  db_key: string
+  date_from: string | null
+  date_to: string | null
+  /** 已配置开票价的品类数 */
+  priced_codes: number
+  /** 区间总盒数 */
+  total_qty: number
+  /** 未配置开票价、因而未计入金额的盒数 */
+  unpriced_qty: number
+  /** unpriced_qty / total_qty 的百分比 */
+  unpriced_share: number
+  /** 缺价品类明细（按盒数降序） */
+  items: AmountCoverageItem[]
+}
+
+/**
+ * 查「实销金额」口径完整性：区间内哪些品类有销量却没配开票价。
+ * 这些品类被按 0 计入金额，会让金额静默偏低。
+ */
+export function fetchAmountCoverage(dbKey: string, dateFrom?: string, dateTo?: string) {
+  return request<AmountCoverageResponse>(`/api/${dbKey}/stats/amount_coverage`, {
+    date_from: dateFrom,
+    date_to: dateTo,
+  })
+}
+
 // ---------- 商品编码 → 品类中文名 映射管理 ----------
 
 export interface ProductMapItem {
@@ -764,14 +826,6 @@ export function saveProductMap(dbKey: string, items: ProductMapItem[]) {
   return request<ProductMapResponse>(`/api/product-map/${dbKey}`, { items }, 'POST')
 }
 
-export function deleteProductCode(dbKey: string, code: string) {
-  return request<{ db_key: string; deleted: string }>(
-    `/api/product-map/${dbKey}/${encodeURIComponent(code)}`,
-    undefined,
-    'DELETE',
-  )
-}
-
 // ============================================================
 // 数字看板（大参林）
 // ============================================================
@@ -781,12 +835,17 @@ export interface DashboardOption {
   products: { code: string; name: string }[]
   month_range: { min: string | null; max: string | null }
   supports_store_type: boolean
+  /** 是否开放库存管理 / 动销率 / 库存情况查询（本期仅大参林） */
+  supports_inventory?: boolean
 }
 
 export interface DashboardKpi {
   boxes: number
   yoy_boxes: number
   yoy_pct: number | null
+  amount: number | null
+  yoy_amount: number | null
+  yoy_amount_pct: number | null
   rows: number
   stores: number
   provinces: number | null
@@ -798,18 +857,25 @@ export interface DashboardTrend {
   current: number[]
   previous: number[]
   growth: (number | null)[]
+  current_amount: number[]
+  previous_amount: number[]
+  growth_amount: (number | null)[]
 }
 
 export interface BreakdownItem {
   key: string | number
   name: string
   boxes: number
+  amount: number
   stores: number
+  /** 仅城市维度返回，标识该城市所属省份 */
+  province?: string | null
 }
 
 export interface StoreTypeSplit {
   st: string
   boxes: number
+  amount: number
   stores: number
 }
 
@@ -818,6 +884,7 @@ export interface TopStore {
   store_name: string
   store_type: string
   boxes: number
+  amount: number
 }
 
 export interface DashboardStores {
@@ -832,19 +899,12 @@ export interface DashboardFilters {
   provinces?: string
   cities?: string
   products?: string
-  store_type?: string
-}
-
-export function getDashboardOptions(dbKey: string) {
-  return request<DashboardOption>(`/api/${dbKey}/dashboard/options`)
+  /** 门店类型：与后端一致，仅这三个取值（all=全部，chain=连锁直营，franchise=加盟） */
+  store_type?: 'all' | 'chain' | 'franchise'
 }
 
 export function getDashboardKpi(dbKey: string, params: DashboardFilters) {
   return request<DashboardKpi>(`/api/${dbKey}/dashboard/kpi`, params)
-}
-
-export function getDashboardTrend(dbKey: string, params: DashboardFilters) {
-  return request<DashboardTrend>(`/api/${dbKey}/dashboard/trend`, params)
 }
 
 export function getDashboardBreakdown(
@@ -859,10 +919,6 @@ export function getDashboardBreakdown(
   )
 }
 
-export function getDashboardStores(dbKey: string, topN: number, params: DashboardFilters) {
-  return request<DashboardStores>(`/api/${dbKey}/dashboard/stores`, { top_n: topN, ...params })
-}
-
 export interface DashboardSummary {
   options: DashboardOption
   kpi: DashboardKpi
@@ -872,7 +928,9 @@ export interface DashboardSummary {
     city: BreakdownItem[]
     product: BreakdownItem[]
   }
-  stores: DashboardStores
+  stores: DashboardStores | null
+  /** 首屏未传日期时，后端实际采用的默认区间 */
+  applied_range: { date_from: string; date_to: string } | null
 }
 
 /** 一次请求拿回看板全部数据（KPI + 趋势 + 省/市/品种拆解 + 门店板块）。 */
@@ -883,7 +941,275 @@ export function getDashboardSummary(
     city_top_n?: number
     product_top_n?: number
     store_top_n?: number
+    include_stores?: boolean
   },
 ) {
   return request<DashboardSummary>(`/api/${dbKey}/dashboard/summary`, params)
+}
+
+// ---------- 数字看板：会话级「静态固定显示」缓存 ----------
+// 看板是「读多写少的分析数据」：同一筛选组合的结果在会话内是稳定的。
+// 这里把结果缓存在模块作用域（跨组件挂载 / 路由切换常驻），于是：
+//   关闭再打开看板、切到别的公司页再切回，都直接返回已有结果，
+//   既不再重复请求，也不再重跑后端的千万级聚合 —— 即「静态固定显示」。
+// 数据真正发生变化（导入 / 清空 / 开票价映射变更）时，由调用方
+// invalidateDashboardCache() 主动失效，保证不长期显示旧数据。
+const _dashboardSummaryCache = new Map<string, DashboardSummary>()
+
+/** 归一化缓存键：忽略空值，避免「未传」与「传空串」被判成两次不同筛选。 */
+function _dashboardCacheKey(dbKey: string, params: Record<string, any>): string {
+  const parts = Object.keys(params)
+    .filter((k) => {
+      const v = params[k]
+      return v !== undefined && v !== null && v !== ''
+    })
+    .sort()
+    .map((k) => `${k}=${params[k]}`)
+  return `${dbKey}|${parts.join('&')}`
+}
+
+/** 同步读取已缓存的首屏结果：命中时可立即「静态」呈现，无需 loading。 */
+export function peekDashboardSummary(dbKey: string, params: Record<string, any>) {
+  return _dashboardSummaryCache.get(_dashboardCacheKey(dbKey, params))
+}
+
+/** 带会话缓存的看板首屏：命中直接返回，未命中请求后写入缓存。 */
+export function getDashboardSummaryCached(
+  dbKey: string,
+  params: Parameters<typeof getDashboardSummary>[1],
+) {
+  const key = _dashboardCacheKey(dbKey, params)
+  const hit = _dashboardSummaryCache.get(key)
+  if (hit) return Promise.resolve(hit)
+  return getDashboardSummary(dbKey, params).then((res) => {
+    _dashboardSummaryCache.set(key, res)
+    // 首屏未传日期时后端回填了默认区间：把同一份结果也登记到「已回填区间」的键下。
+    // 否则下次以具体日期请求会命中不到，关闭重开看板又会重跑一遍（即用户说的「每次都刷新」）。
+    if (res.applied_range) {
+      _dashboardSummaryCache.set(
+        _dashboardCacheKey(dbKey, {
+          ...params,
+          date_from: res.applied_range.date_from,
+          date_to: res.applied_range.date_to,
+        }),
+        res,
+      )
+    }
+    return res
+  })
+}
+
+/** 看板数据发生变化（导入 / 清空 / 开票价映射变更）后调用，清空会话缓存。 */
+export function invalidateDashboardCache() {
+  _dashboardSummaryCache.clear()
+}
+
+export interface DashboardProductDetail {
+  code: string
+  name: string | null
+  months: string[]
+  boxes: number[]
+  amount: number[]
+  stores: number[]
+  yoy_pct: (number | null)[]
+  mom_pct: (number | null)[]
+  total_boxes: number
+  total_amount: number
+  total_stores: number
+}
+
+/** 单品种逐月明细：销量 / 金额 / 门店数 / 同比 / 环比。 */
+export function getDashboardProductDetail(
+  dbKey: string,
+  code: string,
+  params: DashboardFilters,
+) {
+  return request<DashboardProductDetail>(`/api/${dbKey}/dashboard/product-detail`, {
+    code,
+    ...params,
+  })
+}
+
+// ============================================================
+// AI 问数
+// ============================================================
+
+/** 确认卡里单个槽位的状态：绿=已确定 / 黄=待确认（含 AI 建议） / 红=必填缺失 */
+export type AiSlotState = 'resolved' | 'ambiguous' | 'missing'
+
+export interface AiSlotOption {
+  v: string
+  label: string
+  level?: string
+  hot?: boolean
+}
+
+export interface AiSlot {
+  key: string
+  label: string
+  state: AiSlotState
+  value: any
+  display?: string | null
+  note?: string | null
+  options: AiSlotOption[]
+  multi?: boolean
+  sub?: {
+    key: string
+    label: string
+    value: any
+    type: string
+    options?: AiSlotOption[]
+  }[]
+}
+
+export interface AiCard {
+  session_id: string
+  question_id?: number
+  question: string
+  capability: string | null
+  capability_label?: string
+  db_key: string
+  data_range: { min_date: string | null; max_date: string | null }
+  confidence: number
+  core: AiSlot[]
+  advanced: AiSlot[]
+  missing: string[]
+  ready: boolean
+}
+
+export interface AiAnswer {
+  mode: 'answer'
+  question_id?: number
+  session_id: string
+  ok: boolean
+  capability?: string | null
+  capability_label?: string
+  answer?: string
+  caveats?: string[]
+  data?: Record<string, any>
+  cost_ms?: number
+  error?: string
+}
+
+export interface AiAskResponse {
+  mode: 'card' | 'answer'
+  card?: AiCard
+  question_id?: number
+  session_id?: string
+  ok?: boolean
+  answer?: string
+  caveats?: string[]
+  data?: Record<string, any>
+  capability_label?: string
+  cost_ms?: number
+  error?: string
+}
+
+/**
+ * AI 提问。返回两种形态：
+ *  - mode='card'   ：必填槽有缺失/歧义 → 渲染确认卡，让用户补齐（问全）
+ *  - mode='answer' ：槽位齐了，已直接执行
+ */
+export function askAi(dbKey: string, text: string, sessionId?: string) {
+  return request<AiAskResponse>(`/api/${dbKey}/ai/ask`, { text, session_id: sessionId }, 'POST')
+}
+
+/** 确认卡提交 */
+export function confirmAi(
+  dbKey: string,
+  payload: { session_id: string; question_id?: number; answers: Record<string, any>; edited_from?: string },
+) {
+  return request<AiAskResponse>(`/api/${dbKey}/ai/confirm`, payload, 'POST')
+}
+
+/** 用户放弃（重要的负面信号，后端会记埋点） */
+export function abandonAi(dbKey: string, payload: { session_id: string; question_id?: number }) {
+  return request<{ ok: boolean }>(`/api/${dbKey}/ai/abandon`, payload, 'POST')
+}
+
+/** 赞 / 踩 */
+export function feedbackAi(
+  dbKey: string,
+  payload: { question_id: number; rating: number; comment?: string },
+) {
+  return request<{ ok: boolean }>(`/api/${dbKey}/ai/feedback`, payload, 'POST')
+}
+
+// ---------- 模型配置（每个登录用户各管各的） ----------
+
+export interface AiProvider {
+  /** 供应商 key（我们自己的标识，如 deepseek / custom） */
+  key: string
+  /** pi-ai 的 provider 模块名（后端透传给桥梁用，前端不必关心） */
+  pi: string
+  label: string
+  base_url: string
+  docs_url?: string
+  key_hint?: string
+  models: string[]
+  default_model: string
+  note?: string
+}
+
+export interface AiModelConfig {
+  id: number
+  name: string
+  provider: string
+  provider_label: string
+  model: string
+  base_url: string
+  /** 只回显尾部几位，如 sk-****abcd；明文永不出后端 */
+  api_key_masked: string
+  has_key: boolean
+  is_active: boolean
+  updated_at: string
+}
+
+export interface AiModelValidateResult {
+  valid: boolean
+  message: string
+  models?: string[]
+  base_url?: string
+  http_status?: number
+}
+
+/** 可选供应商目录（后端下发，加厂商不用改前端） */
+export function fetchAiProviders() {
+  return request<{ providers: AiProvider[] }>('/api/ai-models/providers')
+}
+
+/** 我保存的模型配置列表 */
+export function fetchAiModels() {
+  return request<{ items: AiModelConfig[] }>('/api/ai-models')
+}
+
+/** 新建或更新一套配置（id 为空即新建；api_key 留空表示保留原密钥） */
+export function saveAiModel(payload: {
+  id?: number
+  name: string
+  provider: string
+  model: string
+  api_key?: string
+  base_url?: string
+}) {
+  return request<{ ok: boolean; item: AiModelConfig }>('/api/ai-models', payload, 'POST')
+}
+
+/** 切换当前启用的一套 */
+export function activateAiModel(configId: number) {
+  return request<{ ok: boolean }>(`/api/ai-models/${configId}/activate`, {}, 'POST')
+}
+
+export function deleteAiModel(configId: number) {
+  return request<{ ok: boolean }>(`/api/ai-models/${configId}`, undefined, 'DELETE')
+}
+
+/** 保存前先测连通性 */
+export function validateAiModel(payload: {
+  provider: string
+  model?: string
+  api_key: string
+  base_url?: string
+}) {
+  return request<AiModelValidateResult>('/api/ai-models/validate', payload, 'POST')
 }

@@ -1,0 +1,151 @@
+# ============================================================
+# 医药销售数据库（CRDB）· Docker Compose
+#
+# ⚠️ 端口策略：本机的 80/443/5432/8000/8080 等已被 Ticketsys 和宝塔占用，
+#    CRDB 一律避开，不抢任何已被占用的端口：
+#      - postgres：不映射宿主机端口（只在容器网络内，靠 docker exec 运维）
+#      - api     ：不映射宿主机端口（只在容器网络内，由 web 反代）
+#      - web     ：映射 ${WEB_PORT:-18080}（避开常见端口；被占用就改 .env 的 WEB_PORT）
+#
+#    注意：Compose 多文件合并时 ports 是「追加」不是「覆盖」，
+#         所以别在覆盖文件里写 ports: [] 或再写一遍端口，会重复绑定报错。
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# ============================================================
+services:
+  # ===== PostgreSQL（三库：dashenlin / gaoji / haiwang 都由 init_db.py 自动创建）=====
+  postgres:
+    image: postgres:16-alpine
+    container_name: crdb-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+      TZ: Asia/Shanghai
+    # 不映射宿主机端口：5432 已被占用，且生产环境不应暴露数据库
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # 给并行查询足够的共享内存（默认 64m 在小容器里会拖累分析型聚合）
+    shm_size: "256m"
+    # 面向 2~4GB 小内存的分析型负载调优（默认值可在 .env 覆盖，见 .env.example）
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-384MB}"
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1152MB}"
+      - "-c"
+      - "work_mem=${PG_WORK_MEM:-32MB}"
+      - "-c"
+      - "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}"
+      - "-c"
+      - "max_connections=${PG_MAX_CONNECTIONS:-60}"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "default_statistics_target=100"
+
+  # ===== 后端 FastAPI =====
+  api:
+    build:
+      context: ./drug_db_system/backend
+    image: crdb/api:${VERSION:-1.0.0}
+    container_name: crdb-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: ${POSTGRES_USER:-postgres}
+      PG_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Excel 源数据目录（仓库根，含三个 xlsx；IMPORT_EXCEL=false 时不会用）
+      EXCEL_DIR: /data/excel
+      # AI 兜底（L2）：默认开启。高频问法由规则路径（L0/L1）直接覆盖、0 token；
+      # 只有「连能力都没识别出来」且该用户配了自己的模型时才会走 ai-bridge。
+      AI_BRIDGE_ENABLED: ${AI_BRIDGE_ENABLED:-true}
+      AI_BRIDGE_URL: ${AI_BRIDGE_URL:-http://ai:3000}
+      AI_BRIDGE_TIMEOUT: ${AI_BRIDGE_TIMEOUT:-8}
+      AI_LLM_FILL_THRESHOLD: ${AI_LLM_FILL_THRESHOLD:-0.6}
+      TZ: Asia/Shanghai
+    volumes:
+      # 商品编码→品类名映射等持久化 JSON
+      - ./drug_db_system/backend/data:/app/data
+      # 仓库根（三个 Excel 源文件）
+      - ./:/data/excel:ro
+    # 不映射宿主机端口：8000 可能冲突，统一由 web 反代
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ===== AI 桥梁（默认启动）=====
+  # 只在「规则路径失效、需要 LLM 补槽位」时才被调用；不启动也不影响 AI 功能
+  #（高频问法由后端规则直接覆盖，0 token）。
+  #
+  # 两种构建模式（见 drug_db_system/ai-bridge/Dockerfile）：
+  #   1) 宿主机已生成 pi 打包产物（drug_db_system/pi/.artifacts/pi-packages）→ 镜像带 L2；
+  #   2) 没生成产物 → 镜像照常构建、容器照常启动，只是 /fill-slots 返回 503，
+  #      Python 侧自动退回规则路径，系统功能完全不受影响。
+  # 想让 L2 真正可用：在宿主机按 drug_db_system/ai-bridge/README.md 跑一次打包，再
+  #   docker compose up -d --build ai
+  ai:
+    build:
+      # 上下文取 drug_db_system/（ai-bridge/ 与 pi/ 的同级目录）：
+      # 这样 Dockerfile 里的相对路径，与 ai-bridge/package.json 里
+      # use-local-packages 写出的 file:./../pi/.artifacts/... 正好对得上。
+      context: ./drug_db_system
+      dockerfile: ai-bridge/Dockerfile
+    image: crdb/ai-bridge:${VERSION:-1.0.0}
+    container_name: crdb-ai-bridge
+    restart: unless-stopped
+    environment:
+      # 不配任何密钥：模型配置由前端保存到后端、随每次请求透传进来。
+      # 换句话说，容器被拿到也拿不到用户的 API Key。
+      PORT: 3000
+      TZ: Asia/Shanghai
+    healthcheck:
+      # /health 同时报告 pi 是否就绪（pi_ready）：为 false 说明镜像里没带 pi 产物，
+      # L2 不会生效 —— 一眼看出「为什么配了模型还是走规则」。
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      - api
+
+  # ===== 前端（Vue3 + Vite 构建产物，Nginx 托管并反代 /api）=====
+  web:
+    build:
+      context: ./drug_db_system/frontend
+      args:
+        VITE_DISABLE_DOWNLOAD: "${VITE_DISABLE_DOWNLOAD:-true}"
+    image: crdb/web:${VERSION:-1.0.0}
+    container_name: crdb-web
+    restart: unless-stopped
+    # 避开 Ticketsys / 宝塔占用的端口，默认 18080
+    # 想只允许本机访问，把左边改成 "127.0.0.1:${WEB_PORT:-18080}:80"
+    ports:
+      - "${WEB_PORT:-18080}:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

@@ -93,7 +93,7 @@
           <el-button @click="handleReset">
             <el-icon><RefreshRight /></el-icon> 重置
           </el-button>
-          <el-button type="success" :loading="exporting" @click="handleExport">
+          <el-button type="success" @click="handleExport">
             <el-icon><Download /></el-icon> 导出CSV
           </el-button>
         </div>
@@ -234,7 +234,6 @@ import {
   fetchStoreAbility,
   exportStoreAbility,
   fetchStoreAbilityLatestRange,
-  downloadBlob,
   DOWNLOAD_DISABLED,
   type StoreAbilityResponse,
   type StoreAbilityStore,
@@ -244,6 +243,7 @@ import {
 import { getCurrentMonthRange } from '@/utils/date'
 import { requireAdmin, requirePermission } from '@/utils/auth'
 import { logger } from '@/utils/logger'
+import { submitExport } from '@/composables/downloadQueue'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
 import KeywordSelect from '../KeywordSelect.vue'
@@ -291,7 +291,6 @@ onMounted(async () => {
 })
 
 const loading = ref(false)
-const exporting = ref(false)
 
 // ---------- 品类映射（四个统计页共用同一份开关偏好） ----------
 const mapNames = ref(loadMapPref())
@@ -397,16 +396,21 @@ function handleReset() {
   summary.value = { store_count: 0, total_qty: 0, returned: 0, top_n: 100 }
 }
 
-async function handleExport() {
-  if (DOWNLOAD_DISABLED) return
+function handleExport() {
+  if (DOWNLOAD_DISABLED) {
+    ElMessage.warning('导出功能已关闭')
+    return
+  }
   if (!requirePermission('export', '导出统计数据')) return
   if (stores.value.length === 0) {
     ElMessage.warning('请先执行统计后再导出')
     return
   }
-  exporting.value = true
-  try {
-    const blob = await exportStoreAbility(props.dbKey, {
+  submitExport({
+    dbKey: props.dbKey,
+    type: 'store_ability',
+    name: '门店能力分析',
+    params: {
       date_from: dateRange.value?.[0] || undefined,
       date_to: dateRange.value?.[1] || undefined,
       stores: storeKeyword.value || undefined,
@@ -416,17 +420,8 @@ async function handleExport() {
       store_type: storeType.value,
       cities: cities.value || undefined,
       provinces: provinces.value || undefined,
-    })
-    const from = dateRange.value?.[0] || 'all'
-    const to = dateRange.value?.[1] || 'all'
-    downloadBlob(blob, `门店能力分析_${city.value}_${from}_${to}.csv`)
-    ElMessage.success('导出完成')
-  } catch (e: any) {
-    ElMessage.error('导出失败: ' + e.message)
-    logger.error('门店能力分析导出失败: ' + e.message, 'StoreAbilityStats')
-  } finally {
-    exporting.value = false
-  }
+    },
+  })
 }
 </script>
 
@@ -434,14 +429,14 @@ async function handleExport() {
 .store-ability-stats {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  gap: 14px;
+  min-height: 100%;
+  gap: 12px;
 }
 
 .filter-section {
   background: #fff;
   border-radius: 8px;
-  padding: 16px 22px;
+  padding: 14px 18px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
 }

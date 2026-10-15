@@ -1,0 +1,27 @@
+{
+  "name": "crdb-ai-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CRDB AI 问数的 LLM 桥梁：只在规则路径（L0/L1）失效时被调用，单步 slot-filling 后即终止",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "node --experimental-strip-types src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "file:../pi/packages/agent",
+    "@earendil-works/pi-ai": "file:../pi/packages/ai",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}

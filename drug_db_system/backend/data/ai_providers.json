@@ -1,0 +1,110 @@
+{
+  "version": 3,
+  "updated_at": "2026-10-14",
+  "note": "可选的 LLM 供应商目录。前端下拉直接渲染本文件，新增厂商/模型只需改这里，不必动前端/后端代码。字段说明：base_url=默认地址（留空表示必须用户自己填）；api=请求协议，决定 ai-bridge 用哪个 pi-ai 实现；pi=『模型定义模板』来源（借一个同协议的内置 provider 抄模型字段，避免手写 Model 的必填项），同时也是默认地址的兜底来源。",
+
+  "apis": {
+    "openai-completions": "OpenAI Chat Completions（/chat/completions）—— 绝大多数国内厂商与自建网关都属于这一类",
+    "openai-responses": "OpenAI Responses（/responses）—— 目前只有 OpenAI 官方",
+    "anthropic-messages": "Anthropic Messages（/v1/messages）—— 只有 Claude 官方"
+  },
+
+  "providers": [
+    {
+      "key": "deepseek",
+      "pi": "deepseek",
+      "api": "openai-completions",
+      "label": "DeepSeek 深度求索",
+      "base_url": "https://api.deepseek.com",
+      "docs_url": "https://platform.deepseek.com/api_keys",
+      "key_hint": "sk-...",
+      "models": ["deepseek-chat", "deepseek-reasoner"],
+      "default_model": "deepseek-chat",
+      "note": "性价比高，中文问数场景足够；reasoner 响应慢但推理强"
+    },
+    {
+      "key": "zai-coding-cn",
+      "pi": "zai-coding-cn",
+      "api": "openai-completions",
+      "label": "智谱 GLM Coding 套餐（国内）",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "docs_url": "https://open.bigmodel.cn/",
+      "key_hint": "xxxxxxxx.xxxxxxxx（智谱 Key 中间有一个点号）",
+      "models": ["glm-4.6", "glm-4.5", "glm-4.5-air"],
+      "default_model": "glm-4.6",
+      "note": "包月 Coding 套餐专用端点，地址里带 /coding/ —— 与下面的通用 API 不通用，填错会 404"
+    },
+    {
+      "key": "zai-general",
+      "pi": "zai-coding-cn",
+      "api": "openai-completions",
+      "label": "智谱 GLM 通用 API（按量计费）",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "docs_url": "https://open.bigmodel.cn/usercenter/apikeys",
+      "key_hint": "xxxxxxxx.xxxxxxxx（智谱 Key 中间有一个点号）",
+      "models": ["glm-4-plus", "glm-4-air", "glm-4-flash", "glm-4-long"],
+      "default_model": "glm-4-flash",
+      "note": "按 token 计费；glm-4-flash 便宜，适合内测。地址不带 /coding/，且注意这里的 pi 只是模型定义模板（同为智谱）"
+    },
+    {
+      "key": "moonshotai-cn",
+      "pi": "moonshotai-cn",
+      "api": "openai-completions",
+      "label": "月之暗面 Kimi（国内）",
+      "base_url": "https://api.moonshot.cn/v1",
+      "docs_url": "https://platform.moonshot.cn/console/api-keys",
+      "key_hint": "sk-...",
+      "models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-k2-0905-preview"],
+      "default_model": "moonshot-v1-32k",
+      "note": "长上下文友好"
+    },
+    {
+      "key": "qwen-token-plan-cn",
+      "pi": "qwen-token-plan-cn",
+      "api": "openai-completions",
+      "label": "通义千问 Qwen（国内）",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "docs_url": "https://bailian.console.aliyun.com/",
+      "key_hint": "sk-...",
+      "models": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
+      "default_model": "qwen-plus",
+      "note": "阿里云百炼，走 OpenAI 兼容模式"
+    },
+    {
+      "key": "openai",
+      "pi": "openai",
+      "api": "openai-responses",
+      "label": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "docs_url": "https://platform.openai.com/api-keys",
+      "key_hint": "sk-...",
+      "models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"],
+      "default_model": "gpt-4o-mini",
+      "note": "官方走 Responses 协议；国内直连需要网络条件"
+    },
+    {
+      "key": "anthropic",
+      "pi": "anthropic",
+      "api": "anthropic-messages",
+      "label": "Anthropic Claude",
+      "base_url": "https://api.anthropic.com",
+      "docs_url": "https://console.anthropic.com/settings/keys",
+      "key_hint": "sk-ant-...",
+      "models": ["claude-sonnet-4-6", "claude-haiku-4-5"],
+      "default_model": "claude-sonnet-4-6",
+      "note": "Anthropic Messages 协议，工具调用稳定；国内直连需要网络条件"
+    },
+    {
+      "key": "custom",
+      "pi": "deepseek",
+      "api": "openai-completions",
+      "label": "自定义（OpenAI 兼容）",
+      "base_url": "",
+      "docs_url": "",
+      "key_hint": "自建网关的密钥，无则填 none",
+      "models": [],
+      "default_model": "",
+      "note": "任何 OpenAI 兼容网关（OneAPI / 自建 vLLM / Ollama / 其它厂商）；必须自己填 Base URL 与模型名"
+    }
+  ]
+}

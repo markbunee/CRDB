@@ -54,6 +54,8 @@ CRDB/
     │   ├── package.json  vite.config.ts  tsconfig*.json
     │   └── run.sh
     ├── sql/                             ← schema.sql / indexes.sql 参考 SQL
+    ├── pi/                              ← 上游开源 pi 源码（只读，供 ai-bridge 构建产物）
+    ├── ai-bridge/                       ← AI 问数 LLM 桥梁（Node，默认不启用）
     ├── start.sh                         ← 一键启动（WSL2：conda + nvm）
     └── 开发日志.md                       ← 数据预处理 / 运维记录
 ```
@@ -168,11 +170,12 @@ export EXCEL_DIR=/path/to/CRDB      # Excel 源数据目录（默认项目根 CR
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/rows/import_excel` | 导入单个 Excel |
-| POST | `/rows/import_excel_batch` | 批量导入 |
-| GET | `/export` | JSON 导出（小数据量） |
-| GET | `/export/stream` | CSV 流式导出（大数据量推荐，内存恒定） |
-| GET | `/export/excel` | Excel 导出 |
+| POST | `/rows/import_excel` | 导入单个 Excel / CSV |
+| POST | `/rows/import_excel_batch` | 批量导入（Excel / CSV） |
+| GET | `/export` | 全量导出 CSV（`?format=json` 保留旧 JSON 行为） |
+| GET | `/export/stream` | 全量流式导出 CSV（大数据量推荐，内存恒定） |
+| GET | `/export/csv` | 按筛选条件导出 CSV（推荐） |
+| GET | `/export/excel` | 兼容旧路径：同样返回 CSV |
 
 ### 统计（`/api/{db_key}`）
 
@@ -182,11 +185,11 @@ export EXCEL_DIR=/path/to/CRDB      # Excel 源数据目录（默认项目根 CR
 | GET | `/stats/click` | 点击统计（总记录数 + 按日期趋势） |
 | GET | `/stats/distinct` | 某列去重值（筛选下拉用） |
 | GET | `/stats/store_count` | 门店数统计 |
-| GET | `/stats/store_count/export` | 门店数统计导出 |
+| GET | `/stats/store_count/export` | 门店数统计导出（CSV） |
 | GET | `/stats/box_count` | 盒数统计 |
-| GET | `/stats/box_count/export` | 盒数统计导出 |
+| GET | `/stats/box_count/export` | 盒数统计导出（CSV） |
 | GET | `/stats/store_ability` | 门店能力分析（大参林·广州） |
-| GET | `/stats/store_ability/export` | 门店能力分析导出 |
+| GET | `/stats/store_ability/export` | 门店能力分析导出（CSV） |
 | GET | `/stats/store_ability/latest_range` | 门店能力分析最新区间 |
 | GET | `/stats/store_ability/store_trend` | 门店能力趋势 |
 

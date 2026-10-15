@@ -38,6 +38,7 @@ from ..models.schema_def import get_cfg, get_field_map, supports_store_ability
 from ..services.product_map import get_product_map
 from ..services.csv_export import csv_response, rows_to_csv_text
 from ..services.export_gate import ExportRejected, export_slot
+from ..services import stats_cache
 from ..database import get_conn
 from ..logger import get_logger
 
@@ -427,10 +428,20 @@ def store_ability(
     provinces: Optional[str] = Query(None, description="省份，英文逗号分隔；留空=全部"),
 ):
     """门店能力分析（大参林）：总产出排行 + 品类 Top3 与末位（地域可筛选）。"""
-    return _run_store_ability(
+    ck = stats_cache.cache_key(
+        "store_ability", db_key, date_from=date_from, date_to=date_to,
+        products=products, stores=stores, top_n=top_n, map_names=map_names,
+        store_type=store_type, cities=cities, provinces=provinces,
+    )
+    hit = stats_cache.cache_get(ck)
+    if hit is not None:
+        return hit
+    result = _run_store_ability(
         db_key, date_from, date_to, products, top_n, stores=stores, map_names=map_names,
         store_type=store_type, cities=cities, provinces=provinces,
     )
+    stats_cache.cache_set(ck, result)
+    return result
 
 
 @router.get("/stats/store_ability/export")
@@ -532,6 +543,21 @@ def store_ability_trend(
     - 不再区分「完整月 / 非完整月」：按天呈现时每一天本身就是完整的，
       首尾日期不会被截断，因此不存在部分月份的口径问题。
     - products 与主表共用同一筛选口径，保证「表格里的实销总数 = 图表各日合计」。
+    """
+    return _run_store_trend(db_key, store_name, date_from, date_to, products)
+
+
+def _run_store_trend(
+    db_key: str,
+    store_name: str,
+    date_from: str,
+    date_to: str,
+    products: Optional[str] = None,
+) -> dict:
+    """门店按天产出的核心实现（AI 执行层复用）。
+
+    为什么抽出来：原逻辑写在 router 函数体内，参数默认值为 ``Query(...)`` 对象，
+    直接当普通函数调用会拿到 Query 实例而不是字符串，外部无法复用。
     """
     fm = get_field_map(db_key)
     if not fm:

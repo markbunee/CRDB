@@ -28,6 +28,7 @@ from ..services.data_import import parse_dates_vectorized, prepare_for_copy
 from ..database import get_conn
 from ..routers.dashboard import invalidate_dashboard_cache
 from ..routers.filter_options import invalidate_filter_options_cache
+from ..routers.rows import invalidate_rows_cache
 
 # 导入会覆盖/写入业务数据，整组接口仅管理员可用
 router = APIRouter(
@@ -257,6 +258,7 @@ def import_excel(
         raise HTTPException(400, result["error"])
     invalidate_dashboard_cache(db_key)
     invalidate_filter_options_cache(db_key)
+    invalidate_rows_cache(db_key)
     return result
 
 
@@ -311,6 +313,7 @@ def _import_batch_inner(
     if success_count > 0:
         invalidate_dashboard_cache(db_key)
         invalidate_filter_options_cache(db_key)
+        invalidate_rows_cache(db_key)
 
     has_failure = failed_count > 0
     status_code = 207 if has_failure else 200

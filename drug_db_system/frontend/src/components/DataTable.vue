@@ -45,9 +45,8 @@ const emit = defineEmits<{
 
 const displayColumns = computed(() => {
   if (!props.columns?.length) {
-    return props.rows?.length
-      ? Object.keys(props.rows[0]).map((name) => ({ name, type: 'TEXT' }))
-      : []
+    const first = props.rows?.[0]
+    return first ? Object.keys(first).map((name) => ({ name, type: 'TEXT' })) : []
   }
   return props.columns
 })
@@ -137,19 +136,21 @@ function handleSortChange({ prop, order }: { prop?: string; order?: 'ascending' 
   min-width: 1400px;
 }
 
-:deep(.el-table__header-wrapper th) {
+/* 注意：`:deep()` 不能直接写在最外层，否则编译后会变成 ::deep 伪元素并告警；
+   统一挂在根容器 .data-table-wrapper 下，作用范围不变。 */
+.data-table-wrapper :deep(.el-table__header-wrapper th) {
   background: #f5f7fa !important;
 }
 
-:deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
+.data-table-wrapper :deep(.el-table--striped .el-table__body tr.el-table__row--striped td) {
   background: #fafbfc;
 }
 
-:deep(.el-table__body tr:hover > td) {
+.data-table-wrapper :deep(.el-table__body tr:hover > td) {
   background: #f0f5ff;
 }
 
-:deep(.el-table__empty-block) {
+.data-table-wrapper :deep(.el-table__empty-block) {
   min-height: 160px;
 }
 </style>

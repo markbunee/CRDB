@@ -1,71 +1,37 @@
 <template>
   <el-drawer
-    :model-value="props.visible"
+    :model-value="props.modelValue"
     :size="'96%'"
     direction="rtl"
     :title="null"
-    @update:model-value="emit('update:visible', $event)"
+    @update:model-value="emit('update:modelValue', $event)"
     @opened="onOpened"
   >
     <template #header>
       <div class="dash-header">
         <span class="dash-title">数字看板</span>
         <span class="dash-sub">经营总览 · {{ dbLabel }}</span>
-        <el-tag v-if="options?.supports_store_type" type="info" size="small">含连锁/加盟</el-tag>
+        <div class="unit-switch">
+          <span class="unit-label">指标</span>
+          <el-radio-group v-model="metric" size="small">
+            <el-radio-button value="boxes">盒数</el-radio-button>
+            <el-radio-button value="amount">金额</el-radio-button>
+          </el-radio-group>
+          <template v-if="metric === 'amount'">
+            <span class="unit-label">单位</span>
+            <el-radio-group v-model="amountUnit" size="small">
+              <el-radio-button value="yuan">元</el-radio-button>
+              <el-radio-button value="wan">万</el-radio-button>
+            </el-radio-group>
+          </template>
+        </div>
       </div>
     </template>
 
     <div v-loading="loading" class="dash-body">
-      <!-- ============ 筛选区 ============ -->
+      <!-- ============ 筛选区：仅时间（全国全品类总览，地域/品种通过点击卡片下钻） ============ -->
       <el-card class="filter-card" shadow="never">
         <el-form :inline="true" class="filter-form">
-          <el-form-item label="省份">
-            <el-select
-              v-model="provinces"
-              multiple
-              filterable
-              clearable
-              collapse-tags
-              placeholder="全部省份"
-              style="width: 240px"
-            >
-              <el-option v-for="p in options?.provinces || []" :key="p" :label="p" :value="p" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="城市">
-            <el-select
-              v-model="cities"
-              multiple
-              filterable
-              clearable
-              collapse-tags
-              placeholder="全部城市"
-              style="width: 240px"
-            >
-              <el-option v-for="c in options?.cities || []" :key="c" :label="c" :value="c" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item label="品种">
-            <el-select
-              v-model="products"
-              multiple
-              filterable
-              clearable
-              collapse-tags
-              placeholder="全部品种"
-              style="width: 320px"
-            >
-              <el-option
-                v-for="p in options?.products || []"
-                :key="p.code"
-                :label="`${p.name} (${p.code})`"
-                :value="p.code"
-              />
-            </el-select>
-          </el-form-item>
-
           <el-form-item label="月份">
             <el-date-picker
               v-model="dateRange"
@@ -77,24 +43,20 @@
             />
           </el-form-item>
 
-          <el-form-item v-if="options?.supports_store_type" label="门店类型">
-            <el-radio-group v-model="storeType">
-              <el-radio-button value="all">全部</el-radio-button>
-              <el-radio-button value="chain">连锁</el-radio-button>
-              <el-radio-button value="franchise">加盟</el-radio-button>
-            </el-radio-group>
+          <el-form-item>
+            <el-button type="primary" :icon="Search" :loading="loading" @click="loadAll(true)">查询</el-button>
+            <el-button :icon="RefreshLeft" :disabled="loading" @click="resetFilters">重置</el-button>
           </el-form-item>
 
-          <el-form-item>
-            <el-button type="primary" :icon="Search" @click="loadAll">查询</el-button>
-            <el-button :icon="RefreshLeft" @click="resetFilters">重置</el-button>
+          <el-form-item class="filter-hint">
+            <span class="hint-text">全国全品类总览 · 仅按时间筛选；点击省份/品种卡片可下钻到单个城市与品类</span>
           </el-form-item>
         </el-form>
       </el-card>
 
       <!-- ============ KPI ============ -->
       <el-row :gutter="12" class="kpi-row">
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
             <div class="kpi-label">盒数(总)</div>
             <div class="kpi-value">{{ fmt(kpi?.boxes) }}</div>
@@ -103,35 +65,37 @@
             </div>
           </el-card>
         </el-col>
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
-            <div class="kpi-label">环比笔数</div>
-            <div class="kpi-value">{{ fmt(kpi?.rows) }}</div>
-            <div class="kpi-yoy muted">销售记录条数</div>
+            <div class="kpi-label">销售金额</div>
+            <div class="kpi-value">{{ formatAmount(kpi?.amount, amountUnit) }}</div>
+            <div class="kpi-yoy" :class="yoyClass(kpi?.yoy_amount_pct)">
+              同比 {{ kpi?.yoy_amount_pct == null ? '/' : (kpi.yoy_amount_pct >= 0 ? '+' : '') + kpi.yoy_amount_pct + '%' }}
+            </div>
           </el-card>
         </el-col>
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
             <div class="kpi-label">门店数</div>
             <div class="kpi-value">{{ fmt(kpi?.stores) }}</div>
             <div class="kpi-yoy muted">去重门店</div>
           </el-card>
         </el-col>
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
             <div class="kpi-label">覆盖省份</div>
             <div class="kpi-value">{{ fmt(kpi?.provinces) }}</div>
             <div class="kpi-yoy muted">省级行政区</div>
           </el-card>
         </el-col>
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
             <div class="kpi-label">覆盖城市</div>
             <div class="kpi-value">{{ fmt(kpi?.cities) }}</div>
             <div class="kpi-yoy muted">地级市</div>
           </el-card>
         </el-col>
-        <el-col :span="4">
+        <el-col :span="4" :sm="8" :xs="12">
           <el-card shadow="hover" class="kpi-card">
             <div class="kpi-label">去年同期盒数</div>
             <div class="kpi-value">{{ fmt(kpi?.yoy_boxes) }}</div>
@@ -139,114 +103,157 @@
           </el-card>
         </el-col>
       </el-row>
+      <div class="kpi-extra">
+        <el-icon><Document /></el-icon>
+        <span>销售记录 {{ fmt(kpi?.rows) }} 条 · 金额单位：{{ amountUnitLabel(amountUnit) }}</span>
+      </div>
 
-      <!-- ============ 板块一：销售趋势（同比） ============ -->
+      <!-- ============ 板块二：品种表现 / 省市表现 ============ -->
       <el-card class="section" shadow="never">
-        <template #header><span class="section-title">销售趋势 · 同比增长</span></template>
-        <div ref="trendChart" class="chart chart-lg"></div>
-        <div v-if="!yoyAvailable && kpi" class="yoy-tip">
-          去年同期该区间无销量（或数据未覆盖，数据自 {{ dataStartYear }} 年起），同比显示「/」
+        <template #header>
+          <div class="tab-header">
+            <el-radio-group v-model="activeTab" size="small">
+              <el-radio-button value="product">品种表现</el-radio-button>
+              <el-radio-button value="region">省市表现</el-radio-button>
+            </el-radio-group>
+            <span class="region-tip">
+              <template v-if="activeTab === 'region'">
+                点击省份卡片展开该省全部城市；点击「查看品种明细」查看月度维度
+              </template>
+              <template v-else>点击品种卡片查看该品种月度明细</template>
+            </span>
+          </div>
+        </template>
+
+        <!-- 品种表现：卡片网格 -->
+        <div v-if="activeTab === 'product'" class="region-grid">
+          <div
+            v-for="p in visibleProducts"
+            :key="p.key"
+            class="region-card product-card"
+            @click="onSelectProduct({ code: String(p.key), name: displayName(p.name) })"
+          >
+            <div class="region-name" :title="displayName(p.name)">{{ displayName(p.name) }}</div>
+            <div class="region-metric">
+              <div class="metric-value">{{ itemLabel(p) }}</div>
+              <div class="metric-label">{{ metric === 'amount' ? '金额' : '销量' }}</div>
+            </div>
+            <div class="region-stores">门店数 {{ fmt(p.stores) }}</div>
+            <div class="region-link">
+              <el-icon><View /></el-icon> 点击查看月度明细
+            </div>
+          </div>
+          <div v-if="sortedProducts.length > PRODUCT_INITIAL" class="expand-more">
+            <el-button link type="primary" size="small" @click="showAllProducts = true">
+              展开全部品种（共 {{ sortedProducts.length }}）
+            </el-button>
+          </div>
         </div>
-      </el-card>
 
-      <!-- ============ 板块二：地域分布 ============ -->
-      <el-card class="section" shadow="never">
-        <template #header><span class="section-title">地域分布（按盒数 Top15）</span></template>
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <div class="chart-subtitle">省份</div>
-            <div ref="provinceChart" class="chart chart-md"></div>
-          </el-col>
-          <el-col :span="12">
-            <div class="chart-subtitle">城市</div>
-            <div ref="cityChart" class="chart chart-md"></div>
-          </el-col>
-        </el-row>
-      </el-card>
+        <!-- 省市表现：省份卡片 + 展开城市 -->
+        <div v-else-if="activeTab === 'region'" class="region-grid">
+          <div
+            v-for="p in sortedProvinces"
+            :key="p.key"
+            class="region-card province-card"
+          >
+            <div class="region-card-header">
+              <div class="region-name clickable" @click="toggleProvince(String(p.name))">
+                {{ p.name }}
+              </div>
+              <el-button
+                v-if="citiesByProvince[p.name]?.length"
+                link
+                type="primary"
+                size="small"
+                @click="toggleProvince(String(p.name))"
+              >
+                {{ splitProvinces[p.name] ? '收起城市' : '拆分城市' }}
+              </el-button>
+            </div>
+            <div class="region-metric">
+              <div class="metric-value">{{ itemLabel(p) }}</div>
+              <div class="metric-label">{{ metric === 'amount' ? '金额' : '销量' }}</div>
+            </div>
+            <div class="region-stores">门店数 {{ fmt(p.stores) }}</div>
+            <div class="region-link" @click="onViewProducts(p)">
+              <el-icon><View /></el-icon> 点击查看品种明细
+            </div>
 
-      <!-- ============ 板块三：品种分布 ============ -->
-      <el-card class="section" shadow="never">
-        <template #header><span class="section-title">品种分布（商品编码 → 商品名，Top20）</span></template>
-        <div ref="productChart" class="chart chart-lg"></div>
-      </el-card>
-
-      <!-- ============ 板块四：连锁 vs 加盟 ============ -->
-      <el-card v-if="options?.supports_store_type" class="section" shadow="never">
-        <template #header><span class="section-title">连锁 vs 加盟</span></template>
-        <el-row :gutter="16">
-          <el-col :span="14">
-            <div class="split-cards">
-              <div v-for="s in stores?.store_type_split || []" :key="s.st" class="split-card">
-                <div class="split-tag" :class="{ franchise: s.st === '加盟' }">{{ s.st }}</div>
-                <div class="split-metric">
-                  <div class="m-label">盒数</div>
-                  <div class="m-value">{{ fmt(s.boxes) }}</div>
+            <!-- 城市展开网格 -->
+            <div v-if="splitProvinces[p.name]" class="city-grid">
+              <div
+                v-for="c in visibleCities(String(p.name))"
+                :key="c.key"
+                class="region-card city-card"
+              >
+                <div class="region-name">{{ c.name }}</div>
+                <div class="region-metric">
+                  <div class="metric-value">{{ itemLabel(c) }}</div>
+                  <div class="metric-label">{{ metric === 'amount' ? '金额' : '销量' }}</div>
                 </div>
-                <div class="split-metric">
-                  <div class="m-label">门店数</div>
-                  <div class="m-value">{{ fmt(s.stores) }}</div>
+                <div class="region-stores">门店数 {{ fmt(c.stores) }}</div>
+                <div class="region-link" @click="onViewProducts(c)">
+                  <el-icon><View /></el-icon> 点击查看品种明细
                 </div>
               </div>
+              <div
+                v-if="(citiesByProvince[p.name] || []).length > CITY_INITIAL && !expandedCities[p.name]"
+                class="expand-more"
+              >
+                <el-button link type="primary" size="small" @click="expandedCities[p.name] = true">
+                  展开该省全部城市（共 {{ (citiesByProvince[p.name] || []).length }}）
+                </el-button>
+              </div>
             </div>
-          </el-col>
-          <el-col :span="10">
-            <div ref="storeTypeChart" class="chart chart-md"></div>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
+
       </el-card>
 
-      <!-- ============ 板块五：门店板块 ============ -->
-      <el-card class="section" shadow="never">
-        <template #header><span class="section-title">门店板块 · 排名 / 盒数 / 品种能力</span></template>
-        <el-row :gutter="16">
-          <el-col :span="14">
-            <div class="chart-subtitle">门店排名 Top20（按盒数）</div>
-            <el-table :data="topStores" size="small" max-height="420" border stripe>
-              <el-table-column type="index" label="排名" width="60" align="center" />
-              <el-table-column prop="store_name" label="门店名称" min-width="180" show-overflow-tooltip />
-              <el-table-column label="类型" width="90" align="center">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.store_type === '加盟' ? 'warning' : 'success'">
-                    {{ row.store_type }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="boxes" label="盒数" width="120" align="right" sortable>
-                <template #default="{ row }">{{ fmt(row.boxes) }}</template>
-              </el-table-column>
-              <el-table-column label="占比" width="120" align="right">
-                <template #default="{ row }">
-                  {{ topStoreTotal ? (row.boxes / topStoreTotal * 100).toFixed(2) + '%' : '—' }}
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-col>
-          <el-col :span="10">
-            <div class="chart-subtitle">品种能力 Top15（门店最畅销品种）</div>
-            <div ref="storeProductChart" class="chart chart-md"></div>
-          </el-col>
-        </el-row>
-      </el-card>
     </div>
+
+    <!-- 地域品种明细弹窗 -->
+    <DashboardRegionDialog
+      v-model="regionDialog.visible"
+      :db-key="dbKey"
+      :title="regionDialog.title"
+      :filters="dialogFilters"
+      :province="regionDialog.province"
+      :city="regionDialog.city"
+      :metric="metric"
+      :amount-unit="amountUnit"
+      @select-product="onSelectProduct"
+    />
+    <!-- 品种月度明细弹窗 -->
+    <DashboardProductDialog
+      v-model="productDialog.visible"
+      :db-key="dbKey"
+      :code="productDialog.code"
+      :product-name="productDialog.name"
+      :filters="dialogFilters"
+      :amount-unit="amountUnit"
+    />
   </el-drawer>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import * as echarts from 'echarts'
-import { Search, RefreshLeft } from '@element-plus/icons-vue'
+import { ref, computed, watch } from 'vue'
+import { Search, RefreshLeft, Document, View } from '@element-plus/icons-vue'
 import {
-  getDashboardSummary,
-  type DashboardOption,
+  getDashboardSummaryCached,
+  peekDashboardSummary,
   type DashboardKpi,
-  type DashboardTrend,
   type BreakdownItem,
-  type DashboardStores,
   type DashboardFilters,
+  type DashboardSummary,
 } from '@/api/client'
+import { formatAmount, amountUnitLabel, type AmountUnit } from '@/utils/amount'
+import DashboardRegionDialog from '@/components/DashboardRegionDialog.vue'
+import DashboardProductDialog from '@/components/DashboardProductDialog.vue'
 
-const props = defineProps<{ visible: boolean; dbKey: string }>()
-const emit = defineEmits<{ 'update:visible': [boolean] }>()
+const props = defineProps<{ modelValue: boolean; dbKey: string }>()
+const emit = defineEmits<{ 'update:modelValue': [boolean] }>()
 
 const dbLabel = computed(() => {
   const map: Record<string, string> = {
@@ -258,254 +265,201 @@ const dbLabel = computed(() => {
 })
 
 const loading = ref(false)
-const options = ref<DashboardOption | null>(null)
 const kpi = ref<DashboardKpi | null>(null)
-const trend = ref<DashboardTrend | null>(null)
 const provinceItems = ref<BreakdownItem[]>([])
 const cityItems = ref<BreakdownItem[]>([])
 const productItems = ref<BreakdownItem[]>([])
-const stores = ref<DashboardStores | null>(null)
 
-const provinces = ref<string[]>([])
-const cities = ref<string[]>([])
-const products = ref<string[]>([])
+// 看板固定为「全国全品类」总览，地域/品种通过点击卡片下钻，顶部仅保留时间筛选
 const dateRange = ref<[string, string] | null>(null)
-const storeType = ref<'all' | 'chain' | 'franchise'>('all')
 
-const topStores = computed(() => stores.value?.top_stores || [])
-// 占比分母：优先用 KPI 的门店总盒数（与 Top 门店同口径：相同日期/地域/品种/门店类型过滤），
-// 更真实反映「单店贡献度」；KPI 未加载时退化为 Top20 之和。
-const topStoreTotal = computed(() => {
-  const total = kpi.value?.boxes
-  if (total != null) return Number(total)
-  return topStores.value.reduce((s, r) => s + (Number(r.boxes) || 0), 0)
-})
+// 金额显示单位：元 / 万
+const amountUnit = ref<AmountUnit>('wan')
+// 主指标：盒数 / 金额
+const metric = ref<'boxes' | 'amount'>('boxes')
+// 表现 Tab：品种表现 / 省市表现
+const activeTab = ref<'product' | 'region'>('region')
+// 省份 → 是否展开城市维度
+const splitProvinces = ref<Record<string, boolean>>({})
+// 卡片网格惰性展开：品种/城市先只渲染 Top N，避免一次性把数百~数千张卡片铺满 DOM
+// （前端未做虚拟滚动，全量渲染才是真正卡顿主因，远甚于图表重绘）。
+const PRODUCT_INITIAL = 60
+const CITY_INITIAL = 100
+const showAllProducts = ref(false)
+const expandedCities = ref<Record<string, boolean>>({})
+const visibleProducts = computed(() =>
+  showAllProducts.value ? sortedProducts.value : sortedProducts.value.slice(0, PRODUCT_INITIAL),
+)
+function visibleCities(name: string): BreakdownItem[] {
+  const list = citiesByProvince.value[name] || []
+  return expandedCities.value[name] ? list : list.slice(0, CITY_INITIAL)
+}
+// 地域品种明细弹窗
+const regionDialog = ref({ visible: false, title: '', province: '', city: '' })
+// 品种月度明细弹窗
+const productDialog = ref({ visible: false, code: '', name: '' })
 
-// 同比是否有值：基期（去年同期）为 0 时后端返回 null，前端显示「/」
-const yoyAvailable = computed(() => kpi.value?.yoy_pct != null)
-// 数据起始年份（用于提示文案），取自 options 的月范围下限
-const dataStartYear = computed(() => {
-  const m = options.value?.month_range?.min
-  return m ? String(m).slice(0, 4) : ''
-})
-
-// ---------- echarts ----------
-const trendChart = ref<HTMLElement | null>(null)
-const provinceChart = ref<HTMLElement | null>(null)
-const cityChart = ref<HTMLElement | null>(null)
-const productChart = ref<HTMLElement | null>(null)
-const storeTypeChart = ref<HTMLElement | null>(null)
-const storeProductChart = ref<HTMLElement | null>(null)
-const charts: echarts.ECharts[] = []
-
-function makeChart(refEl: typeof ref<HTMLElement | null>) {
-  const el = refEl.value
-  if (!el) return null
-  const c = echarts.init(el)
-  charts.push(c)
-  return c
+function itemValue(it: BreakdownItem): number {
+  return metric.value === 'amount' ? it.amount || 0 : it.boxes || 0
+}
+function itemLabel(it: BreakdownItem): string {
+  return metric.value === 'amount' ? formatAmount(it.amount, amountUnit.value) : fmt(it.boxes)
+}
+function displayName(name: string): string {
+  const s = String(name || '')
+  return s.endsWith(')') && s.includes(' (') ? s.slice(0, s.lastIndexOf(' (')) : s
 }
 
-function disposeCharts() {
-  charts.forEach((c) => c.dispose())
-  charts.length = 0
-}
+// 地域 / 品种分布：按当前指标排序
+const sortedProvinces = computed(() =>
+  [...provinceItems.value].sort((a, b) => itemValue(b) - itemValue(a)),
+)
+const sortedProducts = computed(() =>
+  [...productItems.value].sort((a, b) => itemValue(b) - itemValue(a)),
+)
+const citiesByProvince = computed(() => {
+  const map: Record<string, BreakdownItem[]> = {}
+  for (const c of cityItems.value) {
+    const p = c.province || '其他'
+    if (!map[p]) map[p] = []
+    map[p].push(c)
+  }
+  for (const p in map) {
+    map[p]?.sort((a, b) => itemValue(b) - itemValue(a))
+  }
+  return map
+})
+
+// 明细弹窗使用的筛选条件（跟随主看板当前筛选）
+const dialogFilters = computed<DashboardFilters>(() => buildParams())
 
 function fmt(n: number | null | undefined): string {
   if (n == null) return '—'
   return Number(n).toLocaleString('zh-CN')
 }
 
-function yoyClass(pct: number | null): string {
+function yoyClass(pct: number | null | undefined): string {
   if (pct == null) return ''
   return pct >= 0 ? 'up' : 'down'
+}
+
+function onViewProducts(item: BreakdownItem) {
+  const isCity = item.province != null
+  regionDialog.value = {
+    visible: true,
+    title: `${item.name} · 品种表现`,
+    province: isCity ? String(item.province) : String(item.name),
+    city: isCity ? String(item.name) : '',
+  }
+}
+
+function onSelectProduct(payload: { code: string; name: string }) {
+  productDialog.value = { visible: true, code: payload.code, name: payload.name }
+}
+
+function toggleProvince(name: string) {
+  splitProvinces.value[name] = !splitProvinces.value[name]
 }
 
 function buildParams(): DashboardFilters {
   return {
     date_from: dateRange.value?.[0] || '',
     date_to: dateRange.value?.[1] || '',
-    provinces: provinces.value.join(','),
-    cities: cities.value.join(','),
-    products: products.value.join(','),
-    store_type: storeType.value,
+    // 看板固定为「全国全品类」总览，地域/品种通过卡片下钻，不在此处筛选
+    provinces: '',
+    cities: '',
+    products: '',
+    store_type: 'all',
   }
 }
 
-/**
- * 默认日期区间：今年 1 月 1 日 ~ 数据最新月份。
- * 若数据起始月份晚于今年 1 月（如数据只到去年），退化为数据起始月，避免首屏区间为空。
- */
-function defaultRange(
-  mr?: { min: string | null; max: string | null } | null,
-): [string, string] | null {
-  const max = mr?.max || ''
-  if (!max) return null
-  const min = mr?.min || ''
-  const from = `${new Date().getFullYear()}-01-01`
-  const lower = min && min.slice(0, 7) > from.slice(0, 7) ? min : from
-  return [lower, max]
-}
+// 首次打开看板时，watch(modelValue) 与抽屉 @opened 可能几乎同时触发加载，
+// 用「在途 Promise」去重：同一时刻只发一次请求，避免重复扫描千万级大表
+// （后端看板缓存是「请求返回后」才写入，并发期间两次都会未命中而真跑一遍）。
+let loadPromise: Promise<void> | null = null
+let loadSeq = 0
 
-async function loadAll() {
+async function loadAll(force = false) {
+  // 用户显式点「查询 / 重置」时 force=true，保证筛选变更一定生效；
+  // 自动触发（打开抽屉）时复用正在进行的加载，去重并发重复请求。
+  if (loadPromise && !force) return loadPromise
+  const mySeq = ++loadSeq
+  const p = buildParams()
+  const sumParams = { ...p, include_stores: false }
+
+  // 命中会话缓存：同一时间区间的结果直接复用，不再查询；
+  // 看板窗格保持「静态固定」显示（数据变化由 import/clear/映射保存时主动失效缓存）。
+  const cached = peekDashboardSummary(props.dbKey, sumParams)
+  if (cached) {
+    // 多数情况：抽屉未销毁、kpi 仍在，直接保持静态显示即可；
+    // 少数情况：因路由切换组件被重建（kpi 已丢），需把缓存回填到视图。
+    if (!kpi.value) {
+      applySummary(cached)
+    }
+    loadPromise = null
+    loading.value = false
+    return
+  }
+
   loading.value = true
-  try {
-    const p = buildParams()
-    // 一次请求拿回全部看板数据（含 options）：
-    // 后端 GROUPING SETS 单 SQL 聚合三维度 + 线程池并发各板块，HTTP 往返从 2 次降到 1 次。
-    const sum = await getDashboardSummary(props.dbKey, p)
-    options.value = sum.options
-    // 首屏未指定区间时：默认「今年 1 月 ~ 最新月」，并用该区间重取一次，
-    // 保证顶部区间与首屏数字口径一致（后端带 TTL 缓存，第二次请求几乎无成本）
-    let result = sum
-    const mr = sum.options?.month_range
-    if (!dateRange.value && mr) {
-      const def = defaultRange(mr)
-      if (def) {
-        dateRange.value = def
-        result = await getDashboardSummary(props.dbKey, buildParams())
-        options.value = result.options
+  loadPromise = (async () => {
+    try {
+      const sum = await getDashboardSummaryCached(props.dbKey, sumParams)
+      if (mySeq !== loadSeq) return // 已被更新的请求取代，丢弃过期结果
+      applySummary(sum)
+    } catch (e: any) {
+      console.error('加载看板数据失败', e)
+    } finally {
+      // 仅当自己仍是最新一次加载时才复位，避免被后发请求「提前解锁」
+      if (mySeq === loadSeq) {
+        loading.value = false
+        loadPromise = null
       }
     }
-    kpi.value = result.kpi
-    trend.value = result.trend
-    provinceItems.value = result.breakdown.province
-    cityItems.value = result.breakdown.city
-    productItems.value = result.breakdown.product
-    stores.value = result.stores
-    await nextTick()
-    renderCharts()
-  } catch (e: any) {
-    console.error('加载看板数据失败', e)
-  } finally {
-    loading.value = false
+  })()
+  return loadPromise
+}
+
+/** 把一份看板汇总结果回填到视图状态。 */
+function applySummary(sum: DashboardSummary) {
+  // 后端已按「今年 1 月 ~ 最新月」计算并回传 applied_range，直接回填，无需二次请求
+  if (!dateRange.value && sum.applied_range) {
+    dateRange.value = [sum.applied_range.date_from, sum.applied_range.date_to]
   }
+  kpi.value = sum.kpi
+  provinceItems.value = sum.breakdown.province
+  cityItems.value = sum.breakdown.city
+  productItems.value = sum.breakdown.product
+  // 数据刷新（筛选变更）后重置惰性展开，避免残留上一批数据的展开态
+  showAllProducts.value = false
+  expandedCities.value = {}
 }
 
 function resetFilters() {
-  provinces.value = []
-  cities.value = []
-  products.value = []
-  storeType.value = 'all'
-  // 重置回到默认口径：今年 1 月 ~ 数据最新月
-  dateRange.value = defaultRange(options.value?.month_range)
-  loadAll()
+  // 置空后由后端按「今年 1 月 ~ 最新月」默认区间计算；
+  // 地域/品种本就不参与顶部筛选，仅保留时间。
+  dateRange.value = null
+  loadAll(true)
 }
 
 /**
- * 抽屉展开完成后再补一次渲染：el-drawer 的内容是懒挂载的，
- * 仅靠 visible 变化时的 nextTick 可能拿不到图表容器，导致首屏图表空白。
+ * 抽屉展开完成后确保数据已就绪：el-drawer 内容是懒挂载的，
+ * 若首屏请求仍在进行，先等它结束（复用同一请求，不再重复发起）。
  */
 async function onOpened() {
+  if (loadPromise) await loadPromise
   if (!kpi.value) await loadAll()
-  else renderCharts()
 }
 
-// ---------- 图表渲染 ----------
-function baseGrid() {
-  return { left: 8, right: 16, top: 30, bottom: 8, containLabel: true }
-}
-
-function renderTrend() {
-  const c = makeChart(trendChart)
-  if (!c || !trend.value) return
-  const t = trend.value
-  c.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['今年', '去年同期', '同比增长%'] },
-    grid: { ...baseGrid(), bottom: 24 },
-    xAxis: { type: 'category', data: t.months, axisLabel: { rotate: 45 } },
-    yAxis: [
-      { type: 'value', name: '盒数' },
-      { type: 'value', name: '同比%', axisLabel: { formatter: '{value}%' } },
-    ],
-    series: [
-      { name: '今年', type: 'line', smooth: true, data: t.current, itemStyle: { color: '#409EFF' } },
-      { name: '去年同期', type: 'line', smooth: true, data: t.previous, itemStyle: { color: '#C0C4CC' }, lineStyle: { type: 'dashed' } },
-      {
-        name: '同比增长%',
-        type: 'bar',
-        yAxisIndex: 1,
-        data: t.growth,
-        itemStyle: { color: '#67C23A' },
-      },
-    ],
-  })
-}
-
-function renderHorizontalBar(elRef: typeof ref<HTMLElement | null>, items: BreakdownItem[], color: string) {
-  const c = makeChart(elRef)
-  if (!c || !items.length) return
-  const sorted = [...items].sort((a, b) => a.boxes - b.boxes)
-  c.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: baseGrid(),
-    xAxis: { type: 'value', name: '盒数' },
-    yAxis: {
-      type: 'category',
-      data: sorted.map((i) => i.name),
-      axisLabel: { width: 160, overflow: 'truncate' },
-    },
-    series: [
-      { type: 'bar', data: sorted.map((i) => i.boxes), itemStyle: { color }, label: { show: true, position: 'right', formatter: (p: any) => Number(p.value).toLocaleString('zh-CN') } },
-    ],
-  })
-}
-
-function renderStoreTypePie() {
-  const c = makeChart(storeTypeChart)
-  if (!c || !stores.value) return
-  const data = (stores.value.store_type_split || []).map((s) => ({
-    name: s.st,
-    value: Number(s.boxes),
-  }))
-  c.setOption({
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0 },
-    series: [
-      {
-        type: 'pie',
-        radius: ['40%', '70%'],
-        data,
-        label: { formatter: '{b}\n{d}%' },
-      },
-    ],
-  })
-}
-
-function renderCharts() {
-  disposeCharts()
-  renderTrend()
-  renderHorizontalBar(provinceChart, provinceItems.value, '#409EFF')
-  renderHorizontalBar(cityChart, cityItems.value, '#E6A23C')
-  renderHorizontalBar(productChart, productItems.value, '#909399')
-  renderStoreTypePie()
-  renderHorizontalBar(storeProductChart, (stores.value?.top_products || []).map((p) => ({
-    key: p.code,
-    name: p.name,
-    boxes: p.boxes,
-    avg_store: 0,
-    stores: 0,
-  })), '#67C23A')
-}
-
-function onResize() {
-  charts.forEach((c) => c.resize())
-}
-
-onMounted(() => {
-  window.addEventListener('resize', onResize)
-})
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
-  disposeCharts()
-})
-
+// immediate: 组件随抽屉挂载时 modelValue 往往已是 true，普通 watch 不会触发；
+// 加 immediate 保证「一挂载就取数」，不依赖「watch 检测到变化」这条不确定的路径，
+// 避免进场空白、只能靠硬刷新恢复。
 watch(
-  () => props.visible,
+  () => props.modelValue,
   async (v) => {
     if (v) await loadAll()
   },
+  { immediate: true },
 )
 </script>
 
@@ -531,6 +485,13 @@ watch(
 }
 .filter-form :deep(.el-form-item) {
   margin-bottom: 8px;
+}
+.filter-hint {
+  margin-left: auto;
+}
+.hint-text {
+  font-size: 12px;
+  color: #909399;
 }
 .kpi-row {
   margin-bottom: 12px;
@@ -566,61 +527,217 @@ watch(
 .section-title {
   font-weight: 600;
 }
-.chart {
-  width: 100%;
-}
-.chart-lg {
-  height: 340px;
-}
-.yoy-tip {
-  margin-top: 8px;
-  font-size: 12px;
-  color: #909399;
-  background: #f4f4f5;
-  border-radius: 4px;
-  padding: 6px 10px;
-}
-.chart-md {
-  height: 360px;
-}
-.chart-subtitle {
-  font-size: 13px;
-  color: #606266;
-  margin-bottom: 6px;
-}
-.split-cards {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.split-card {
-  flex: 1;
-  min-width: 200px;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  padding: 16px;
+/* ---------- 金额单位切换 ---------- */
+.unit-switch {
+  margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 8px;
 }
-.split-tag {
-  font-size: 16px;
-  font-weight: 700;
-  color: #409eff;
-  padding: 6px 12px;
-  border-radius: 6px;
-  background: #ecf5ff;
-}
-.split-tag.franchise {
-  color: #e6a23c;
-  background: #fdf6ec;
-}
-.split-metric .m-label {
+.unit-label {
   font-size: 12px;
   color: #909399;
 }
-.split-metric .m-value {
-  font-size: 20px;
+
+/* ---------- KPI 补充 ---------- */
+.kpi-extra {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #909399;
+  margin: -8px 0 12px 4px;
+}
+
+/* ---------- 地域分布卡片 ---------- */
+.region-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.region-tip {
+  font-size: 12px;
+  color: #909399;
+  font-weight: normal;
+}
+.region-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+.region-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 12px;
+  padding: 16px;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.region-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+.province-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.region-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.region-name {
+  font-size: 16px;
   font-weight: 700;
+  color: #303133;
+}
+.region-rank {
+  font-size: 12px;
+  color: #909399;
+  font-weight: 500;
+  margin-left: 4px;
+}
+.region-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.expand-more {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 4px 0 8px;
+}
+.metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #303133;
+}
+.metric-label {
+  font-size: 12px;
+  color: #909399;
+}
+.region-stores {
+  font-size: 13px;
+  color: #606266;
+}
+.region-link {
+  font-size: 12px;
+  color: #3b6bd6;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.region-link:hover {
+  color: #5b8def;
+}
+.city-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px dashed #e4e7ed;
+}
+.city-card {
+  background: #f8fafc;
+  padding: 12px;
+  gap: 6px;
+}
+.city-card .metric-value {
+  font-size: 22px;
+}
+.city-card .region-name {
+  font-size: 14px;
+}
+
+/* ---------- Tab 头 ---------- */
+.tab-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.region-name.clickable {
+  cursor: pointer;
+}
+.region-name.clickable:hover {
+  color: #3b6bd6;
+}
+.product-card {
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ============================================================
+   手机端（≤768px）：单列纵向排布
+   ============================================================ */
+@media (max-width: 768px) {
+  .dash-body {
+    padding: 0;
+  }
+
+  /* 头部：标题与指标切换换行，切换组占满一行 */
+  .dash-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .unit-switch {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* 筛选区：下拉框撑满、按钮并排等宽 */
+  .filter-form :deep(.el-select) {
+    width: 100% !important;
+  }
+
+  .filter-form :deep(.el-form-item__content) {
+    width: 100%;
+  }
+
+  .filter-form :deep(.el-button) {
+    flex: 1;
+  }
+
+  .kpi-card {
+    padding: 10px 6px;
+    margin-bottom: 10px;
+  }
+
+  .kpi-value {
+    font-size: 18px;
+  }
+
+  /* 地域卡片单列 */
+  .region-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .region-card {
+    padding: 12px;
+  }
+
+  /* 门店排名表：降低高度与字号。
+     注意：`:deep()` 不能裸写在最外层（含 @media 内），需挂在作用域根类下 */
+  .dash-body :deep(.el-table) {
+    font-size: 12px;
+    max-height: 320px;
+  }
+
+  .dash-body :deep(.el-card__body) {
+    padding: 12px;
+  }
+
+  .dash-body :deep(.el-card__header) {
+    padding: 10px 12px;
+  }
 }
 </style>

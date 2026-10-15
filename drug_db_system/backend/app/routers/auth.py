@@ -5,10 +5,14 @@
 - 管理员(admin)：导入 Excel / 导出数据 / 删除数据 / 后台成员管理 / 审批申请。
 - 成员(member)：仅可查询数据与查看统计、看板；敏感操作前端拦截 + 后端 403 双保险。
 
+账号密码规则：
+- 申请账号时由**用户自己设置密码**（bcrypt 哈希入库），管理员与接口全程看不到明文；
+- 审批通过后直接沿用申请人自设的哈希，后端**不生成、不回显任何明文密码**；
+- 管理员无法重置密码，只能**删除成员账号**，让其用手机号重新申请并重设密码。
+
 安全要点（公网部署）：
 - 密码 bcrypt 哈希存储，任何接口都不会返回明文或哈希；
-- 管理员给新成员设的初始密码、重置后的临时密码**仅在响应里回显一次**；
-- 登录接口同 IP+账号连续失败 5 次锁定 5 分钟。
+- 登录为「**手机号 + 密码**」，同 IP+账号连续失败 5 次锁定 5 分钟。
 """
 import logging
 from typing import Any, Dict, Optional
@@ -35,30 +39,38 @@ def _public_user(u: Dict[str, Any]) -> Dict[str, Any]:
 
 @router.post("/login")
 def login(request: Request, body: Dict[str, Any] = Body(...)):
-    """账号密码登录，成功返回 JWT。"""
+    """手机号 + 密码登录，成功返回 JWT。
+
+    登录标识为手机号；按手机号查不到时再按账号名兜底一次，
+    以便管理员等未登记手机号的账号仍可登录。
+    """
+    phone = str(body.get("phone") or "").strip()
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
-    if not username or not password:
-        raise HTTPException(400, "请输入账号和密码")
+    account = phone or username
+    if not account or not password:
+        raise HTTPException(400, "请输入手机号和密码")
 
     ip = request.client.host if request.client else "unknown"
-    key = f"{ip}|{username}"
+    key = f"{ip}|{account}"
     left = A.login_lock_remaining(key)
     if left > 0:
         raise HTTPException(429, f"登录失败次数过多，请 {left} 秒后再试")
 
-    user = A.get_user_auth(username)
+    user = A.get_user_auth_by_phone(phone) if phone else None
+    if user is None:
+        user = A.get_user_auth(account)
     if not user or not A.verify_password(password, user["password_hash"]):
         A.record_login_fail(key)
-        logger.warning("登录失败（账号或密码错误）: %s from %s", username, ip)
-        raise HTTPException(401, "账号或密码错误")
+        logger.warning("登录失败（手机号或密码错误）: %s from %s", account, ip)
+        raise HTTPException(401, "手机号或密码错误")
     if user["status"] != A.STATUS_ACTIVE:
         raise HTTPException(403, "账号已被禁用，请联系管理员")
 
     A.clear_login_fail(key)
     A.touch_login(user["id"])
     token = A.create_access_token(user)
-    logger.info("用户登录成功: %s（角色 %s）", username, user["role"])
+    logger.info("用户登录成功: %s（角色 %s）", user["username"], user["role"])
     return {"token": token, "user": _public_user(user)}
 
 
@@ -100,27 +112,37 @@ def change_password(user: dict = Depends(get_current_user), body: Dict[str, Any]
 
 @router.post("/apply")
 def apply(request: Request, body: Dict[str, Any] = Body(...)):
-    """提交入会申请：姓名 + 电话（必填），可附登录账号与备注。
+    """提交入会申请：姓名 + 电话 + **自设密码**（必填），可附登录账号与备注。
 
-    提交后状态为 pending，需管理员在后台同意后才能登录。
+    密码由申请人自己设置，只存 bcrypt 哈希，管理员审批时也看不到明文。
+    提交后状态为 pending，需管理员在后台同意后才能用「手机号 + 密码」登录。
     """
     name = str(body.get("display_name") or body.get("name") or "").strip()
     phone = str(body.get("phone") or "").strip()
     username = str(body.get("username") or "").strip()
     note = str(body.get("note") or "").strip()
+    password = str(body.get("password") or "")
     if not name:
         raise HTTPException(400, "请填写姓名")
     if not phone:
         raise HTTPException(400, "请填写联系电话")
     if len(phone) < 6:
         raise HTTPException(400, "联系电话格式不正确")
+    if not password:
+        raise HTTPException(400, "请设置登录密码")
+    weak = A.validate_password_strength(password)
+    if weak:
+        raise HTTPException(400, weak)
 
     # 同一手机号已有待审申请则不重复提交
     for app_ in A.list_applications("pending"):
         if app_["phone"] == phone:
             raise HTTPException(400, "该手机号已有待审核的申请，请耐心等待管理员处理")
+    # 已是成员则无需再申请
+    if A.get_user_by_phone(phone):
+        raise HTTPException(400, "该手机号已注册，请直接登录")
 
-    rec = A.create_application(name, phone, username, note)
+    rec = A.create_application(name, phone, A.hash_password(password), username, note)
     logger.info("收到新成员申请: %s / %s", name, phone)
     return {"message": "申请已提交，请等待管理员审核", "application": rec}
 
@@ -145,35 +167,28 @@ def list_members(_admin: dict = Depends(require_admin)):
     }
 
 
-@router.post("/members/{uid}/reset-password")
-def reset_password(
-    uid: int,
-    _admin: dict = Depends(require_admin),
-    body: Optional[Dict[str, Any]] = Body(None),
-):
-    """管理员重置成员密码。
+@router.delete("/members/{uid}")
+def delete_member(uid: int, _admin: dict = Depends(require_admin)):
+    """删除成员账号，让其重新申请。
 
-    body 传 {password: "..."} 则使用指定密码；不传则由系统生成随机强密码。
-    新密码**仅在本次响应中回显一次**，请管理员转告成员并提醒其尽快修改。
+    管理员看不到、也无权设定成员密码，因此「重置密码」的唯一途径就是**删除账号**：
+    删除后该成员立即无法登录，需用手机号重新提交申请并自行设置新密码，再由管理员审批。
+    成员自己仍可通过「修改密码」在已知原密码的前提下改密。
     """
     user = A.get_user_by_id(uid)
     if not user:
         raise HTTPException(404, "成员不存在")
     if user["role"] == A.ROLE_ADMIN:
-        raise HTTPException(400, "不允许重置其他管理员的密码，请使用「修改密码」自行操作")
+        raise HTTPException(400, "不能删除管理员账号")
+    if str(user["id"]) == str(_admin.get("id")):
+        raise HTTPException(400, "不能删除当前登录的账号")
 
-    body = body or {}
-    pwd = str(body.get("password") or "").strip()
-    if not pwd:
-        pwd = A.generate_password()
-    else:
-        weak = A.validate_password_strength(pwd)
-        if weak:
-            raise HTTPException(400, weak)
-
-    A.set_password(uid, pwd, must_change=True)
-    logger.info("管理员 %s 重置了成员 %s 的密码", _admin.get("username"), user["username"])
-    return {"message": "密码已重置", "username": user["username"], "new_password": pwd}
+    A.delete_user(uid)
+    logger.info("管理员 %s 删除了成员 %s（需重新申请）", _admin.get("username"), user["username"])
+    return {
+        "message": "已删除该成员，其需用手机号重新提交申请并设置密码",
+        "username": user["username"],
+    }
 
 
 @router.post("/members/{uid}/status")
@@ -233,11 +248,11 @@ def approve_application(
     _admin: dict = Depends(require_admin),
     body: Optional[Dict[str, Any]] = Body(None),
 ):
-    """同意申请：创建成员账号并设定初始密码（**仅回显一次**）。
+    """同意申请：创建成员账号，密码沿用**申请人自设**的哈希。
 
-    body: {username?: str, password?: str}
+    body: {username?: str}
     - username 不传则用申请时填写的账号，仍没有则按手机号自动生成；
-    - password 不传则由系统生成随机强密码。
+    - 密码是申请时用户自己设的，管理员看不到也无需设定；响应中不返回任何明文密码。
     """
     app_ = A.get_application(aid)
     if not app_:
@@ -251,29 +266,26 @@ def approve_application(
         username = "u" + "".join(ch for ch in app_["phone"] if ch.isdigit())[-8:]
     if A.get_user_by_username(username):
         raise HTTPException(400, f"登录账号 {username} 已存在，请换一个")
+    if A.get_user_by_phone(app_["phone"]):
+        raise HTTPException(400, "该手机号已存在账号，无法重复创建")
 
-    pwd = str(body.get("password") or "").strip()
-    if not pwd:
-        pwd = A.generate_password()
-    else:
-        weak = A.validate_password_strength(pwd)
-        if weak:
-            raise HTTPException(400, weak)
+    # 沿用申请时用户自设密码的哈希，后端与管理员全程不接触明文
+    pwd_hash = A.get_application_password_hash(aid)
+    if not pwd_hash:
+        raise HTTPException(
+            400, "该申请未包含密码（旧版申请），请让申请人重新提交申请并设置密码",
+        )
 
-    user = A.create_user(
+    user = A.create_user_with_hash(
         username=username,
         display_name=app_["display_name"],
         phone=app_["phone"],
-        password=pwd,
+        password_hash=pwd_hash,
         role=A.ROLE_MEMBER,
     )
     A.update_application_status(aid, "approved", _admin.get("username", ""))
     logger.info("管理员 %s 同意了 %s 的申请，生成账号 %s", _admin.get("username"), app_["display_name"], username)
-    return {
-        "message": "已同意申请，账号创建成功",
-        "user": _public_user(user),
-        "initial_password": pwd,  # 唯一一次明文展示
-    }
+    return {"message": "已同意申请，账号创建成功", "user": _public_user(user)}
 
 
 @router.post("/applications/{aid}/reject")

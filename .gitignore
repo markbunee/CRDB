@@ -1,0 +1,14 @@
+# 部署时生成 / 含敏感信息
+.env
+certbot/
+deploy/nginx.prod.conf
+
+# 数据库备份（本地导出的 pgdump_*.tgz 及其解压目录）
+deploy/pgdump/
+
+# 由 setup_nginx_vhost.sh 按域名生成的反代配置
+deploy/crdb-vhost.conf
+
+# Python
+__pycache__/
+*.py[cod]

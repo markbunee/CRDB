@@ -22,7 +22,7 @@
 import json
 import os
 import threading
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from ..config import DATA_DIR
 
@@ -144,6 +144,26 @@ def get_product_map_full(db_key: str) -> Dict[str, MapValue]:
 def get_product_map(db_key: str) -> Dict[str, str]:
     """取某个库的编码 → 中文名映射（兼容旧调用方）。"""
     return {code: v["name"] for code, v in get_product_map_full(db_key).items()}
+
+
+def get_priced_codes(db_key: str) -> List[tuple]:
+    """可用于「实销金额」的 (编码, 开票价)，**只含价格 > 0 的**。
+
+    价格缺失 / 为 0 / 为负数**一律视为「未配价」**——它们对金额的贡献都是 0。
+    关键点：不能只判断 ``price is not None``。若把 0 当成「已配价」，用户把价格
+    写成 0（空输入被存成 0 等）就会落入「金额偏低、却没有任何告警」的静默错误，
+    而「实销金额」与「缺价告警」必须用同一套判定，否则两者会互相矛盾。
+    """
+    out: List[tuple] = []
+    for code, v in get_product_map_full(db_key).items():
+        raw = v.get("price")
+        try:
+            price = float(raw) if raw is not None and str(raw).strip() != "" else 0.0
+        except (TypeError, ValueError):
+            price = 0.0
+        if price > 0:
+            out.append((code, price))
+    return out
 
 
 def replace_product_map(

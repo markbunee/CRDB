@@ -3,12 +3,15 @@
 
 按维度统计实销门店数（DISTINCT 门店编码 非重复计数）。
 
-统一为「拆分维度(多表) + 行维度 + 列维度」模型，支持三种维度：
-  - dimension=city    地域维度：拆分=地域(可合并)，行=品类(商品编码)，列=月份(可合并)
-  - dimension=product 品类维度：拆分=品类(可合并)，行=地域，列=月份(可合并)
-  - dimension=time    时间维度：拆分=月份(可合并)，行=地域，列=品类
+统一为「拆分维度(多表) + 行维度 + 列维度」模型，支持四种维度：
+  - dimension=city     地域维度：拆分=地域(可合并)，行=品类(商品编码)，列=月份(可合并)
+  - dimension=product  品类维度：拆分=品类(可合并)，行=地域，列=月份(可合并)
+  - dimension=time     时间维度：拆分=月份(可合并)，行=地域，列=品类
+  - dimension=province 省份维度：拆分=省份(可合并)，行=省内城市(可合并)，列=品类，月份恒合并
 
 地域级别 region_level 可在城市(city)/省份(province)间二选一切换（城市与省份互斥）。
+地域级别只替换「地域轴」，拆表/行/列角色与城市级别完全一致（省 → 市 的展开视图
+已单拎成独立的 dimension=province，不再与地域级别开关耦合）。
 
 导出：GET /stats/store_count/export 返回 **CSV**（多张子表用首列「分组」区分），英文文件名。
 """
@@ -18,74 +21,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2 import sql
 
 from ..dependencies import validate_db_key, require_admin, require_permission
-from ..models.schema_def import get_cfg, get_field_map, get_region_levels, get_region_label
 from ..services.product_map import get_product_map
 from ..services.csv_export import csv_response, tables_to_csv_text
 from ..services.export_gate import ExportRejected, export_slot
+from ..services import stats_cache
+# 布局（拆表轴/行/列 + 合并开关）与盒数统计共用同一份实现，杜绝两处口径漂移
+from ..services.cube_layout import compute_layout as _compute_layout
+# 透视与值格式化唯一定义在 services/pivot.py（盒数与门店数共用同一份实现）
+from ..services.pivot import (
+    fmt_month as _fmt_month,
+    fmt_val as _fmt_val,
+    make_title as _make_title,
+    pivot_tables,
+    range_label as _range_label,
+    safe_sort as _safe_sort,
+    val_to_str as _val_to_str,
+)
 from ..database import get_conn
 from ..logger import get_logger
 
 router = APIRouter(prefix="/api/{db_key}", tags=["stats-store"])
 logger = get_logger("app.routers.stats_store")
-
-DIMENSIONS = ("city", "product", "time")
-
-
-def _parse_list(val: Optional[str]) -> List[str]:
-    if not val:
-        return []
-    return [v.strip() for v in val.split(",") if v.strip() != ""]
-
-
-def _fmt_month(val: Any) -> str:
-    if val is None:
-        return "未知"
-    if hasattr(val, "strftime"):
-        return val.strftime("%Y-%m")
-    s = str(val)
-    return s[:7] if len(s) >= 7 else s
-
-
-def _val_to_str(val: Any) -> str:
-    if val is None:
-        return ""
-    return str(val)
-
-
-def _fmt_val(fm: Dict[str, str], col_name: Optional[str], val: Any,
-             pmap: Optional[Dict[str, str]] = None) -> Optional[str]:
-    if col_name is None:
-        return None
-    if val is None:
-        return "未知"
-    if col_name == fm["month_col"]:
-        return _fmt_month(val)
-    s = _val_to_str(val)
-    # 品类编码 → 品类中文名（仅 map_names 开启时 pmap 非空；无映射的编码保持原样）
-    if pmap and col_name == fm["product_col"]:
-        return pmap.get(s, s)
-    return s
-
-
-def _range_label(date_from: Optional[str], date_to: Optional[str]) -> str:
-    if date_from and date_to:
-        return f"{date_from} ~ {date_to}"
-    if date_from:
-        return f"{date_from} ~ 至今"
-    if date_to:
-        return f"截至 {date_to}"
-    return "全部日期"
-
-
-def _safe_sort(vals: list) -> list:
-    def key(v):
-        if v is None:
-            return (1, 0, "")
-        return (0, 0, v)
-    try:
-        return sorted(vals, key=key)
-    except TypeError:
-        return sorted(vals, key=lambda v: (v is None, str(v)))
 
 
 def _store_type_expr(cfg: dict) -> Optional[sql.Composable]:
@@ -147,29 +103,6 @@ def _build_where(
     return where, params
 
 
-def _make_title(
-    dimension: str,
-    split_label: Optional[str],
-    merge_split: bool,
-    date_from: Optional[str],
-    date_to: Optional[str],
-    split_name: str,
-    region_name: str,
-) -> str:
-    if merge_split or split_label is None:
-        if split_name == "省份":
-            return "全部省份（合并）"
-        if dimension == "city":
-            return f"全部{region_name}（合并）"
-        if dimension == "product":
-            return "全部品类（合并）"
-        return f"全部月份（合并）· {_range_label(date_from, date_to)}"
-    if split_name == "省份":
-        # 省份展开：子表名直接用省名（导出时即 Excel sheet 名），不再加「省份: 」前缀
-        return f"{split_label}"
-    return f"{split_name}: {split_label}"
-
-
 def _run_store_count(
     db_key: str,
     dimension: str,
@@ -191,88 +124,18 @@ def _run_store_count(
     map_names=True 时把品类编码翻译成映射表中文名（无映射保持编码），
     JSON 与导出共用本函数，因此两者的口径天然一致。
     """
-    fm = get_field_map(db_key)
-    if not fm:
-        raise HTTPException(400, f"该统计功能暂不支持数据库: {db_key}")
-    if dimension not in DIMENSIONS:
-        raise HTTPException(400, f"不支持的维度: {dimension}，可选: {DIMENSIONS}")
+    layout = _compute_layout(
+        db_key, dimension, region_level, cities, provinces, products,
+        merge_months, merge_cities, merge_products, merge_province_cities,
+    )
+    fm, cfg, table = layout.fm, layout.cfg, layout.table
+    group_cols = layout.group_cols
+    province_expanded = layout.province_expanded
 
-    allowed_regions = get_region_levels(db_key)
-    if region_level not in allowed_regions:
-        raise HTTPException(400, f"不支持的地域级别: {region_level}，可选: {allowed_regions}")
-
-    region_label = get_region_label(db_key)
-    cfg = get_cfg(db_key)
-    table = cfg["table"]
-
-    if region_level == "province" and "province_col" in fm:
-        region_col = fm["province_col"]
-        region_name = "省份"
-        region_list = _parse_list(provinces)
-    else:
-        region_col = fm["city_col"]
-        region_name = region_label
-        region_list = _parse_list(cities)
-
-    product_list = _parse_list(products)
-
-    # 省份模式：
-    # - 默认（合并省份未勾选）按「省份展开」：每个省份一张子表，表内 行=城市、列=品类，月份按整段区间合并；
-    # - 勾选「合并省份」(merge_cities)：跨省份合并为一张总表；
-    # - 勾选「合并省份内的城市」(merge_province_cities)：每省内城市折叠成一个整省合计（一省一行）。
-    province_mode = region_level == "province" and "province_col" in fm
-    province_expanded = province_mode
-
-    if province_mode:
-        split_col = fm["province_col"]
-        row_col = fm["city_col"]
-        col_col = fm["product_col"]
-        split_name, row_name, col_name = "省份", region_label, "品类"
-        merge_split = merge_cities         # 合并省份：跨省份合并为单表
-        merge_row = merge_province_cities  # 合并省份内的城市：折叠成整省合计
-        merge_col = merge_products         # 合并品类
-    elif dimension == "city":
-        split_col = region_col
-        row_col = fm["product_col"]
-        col_col = fm["month_col"]
-        merge_split = merge_cities
-        merge_row = merge_products
-        merge_col = merge_months
-        split_name, row_name, col_name = region_name, "品类", "月份"
-    elif dimension == "product":
-        split_col = fm["product_col"]
-        row_col = region_col
-        col_col = fm["month_col"]
-        merge_split = merge_products
-        merge_row = merge_cities
-        merge_col = merge_months
-        split_name, row_name, col_name = "品类", region_name, "月份"
-    else:
-        split_col = fm["month_col"]
-        row_col = region_col
-        col_col = fm["product_col"]
-        merge_split = merge_months
-        merge_row = merge_cities
-        merge_col = merge_products
-        split_name, row_name, col_name = "月份", region_name, "品类"
-
-    month_col = fm["month_col"]
-
-    # 省份模式下月份恒合并（不进表）；其余维度月份按 merge_months 控制
-    merge_for: Dict[str, bool] = {
-        split_col: merge_split,
-        row_col: merge_row,
-        col_col: merge_col,
-    }
-    if not province_mode:
-        merge_for[month_col] = merge_months
-
-    group_cols: List[sql.Identifier] = []
-    for col, merge_flag in merge_for.items():
-        if col and not merge_flag:
-            group_cols.append(sql.Identifier(col))
-
-    where, params = _build_where(fm, cfg, date_from, date_to, product_list, region_col, region_list, store_type)
+    where, params = _build_where(
+        fm, cfg, date_from, date_to,
+        layout.product_list, layout.region_col, layout.region_list, store_type,
+    )
 
     fields = list(group_cols) + [
         sql.SQL("COUNT(DISTINCT {}) AS store_count").format(
@@ -312,10 +175,10 @@ def _run_store_count(
     pmap: Optional[Dict[str, str]] = get_product_map(db_key) if map_names else None
 
     tables = _pivot(
-        raw_rows, fm, dimension, merge_for,
+        raw_rows, layout.fm, dimension, layout.merge_for,
         date_from, date_to,
-        split_col, row_col, col_col,
-        split_name, row_name, col_name, region_name,
+        layout.split_col, layout.row_col, layout.col_col,
+        layout.split_name, layout.row_name, layout.col_name, layout.region_name,
         pmap,
     )
 
@@ -356,100 +219,17 @@ def _pivot(
     region_name: str,
     pmap: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
-    month_col = fm["month_col"]
-    merge_split = merge_for.get(split_col, False) if split_col else False
-    merge_row = merge_for.get(row_col, False) if row_col else False
-    merge_col = merge_for.get(col_col, False) if col_col else False
-    col_is_month_merged = (col_col == month_col and merge_col)
+    """门店数透视：与盒数统计共用 services/pivot.pivot_tables（取值字段 store_count）。
 
-    split_raw: list = []
-    split_seen: set = set()
-    row_raw: list = []
-    row_seen: set = set()
-    col_raw: list = []
-    col_seen: set = set()
-
-    for r in raw_rows:
-        if split_col and not merge_split:
-            v = r.get(split_col)
-            k = _val_to_str(v)
-            if k not in split_seen:
-                split_seen.add(k)
-                split_raw.append(v)
-        if row_col and not merge_row:
-            v = r.get(row_col)
-            k = _val_to_str(v)
-            if k not in row_seen:
-                row_seen.add(k)
-                row_raw.append(v)
-        if col_col and not merge_col:
-            v = r.get(col_col)
-            k = _val_to_str(v)
-            if k not in col_seen:
-                col_seen.add(k)
-                col_raw.append(v)
-
-    if merge_split:
-        split_labels: List[Optional[str]] = [None]
-    else:
-        split_labels = [_fmt_val(fm, split_col, v, pmap) for v in _safe_sort(split_raw)]
-
-    if merge_row:
-        row_keys = [f"全部{row_name}（合并）"]
-    else:
-        row_keys = [_fmt_val(fm, row_col, v, pmap) for v in _safe_sort(row_raw)] if row_col else []
-
-    if col_col:
-        if col_is_month_merged:
-            col_labels = [_range_label(date_from, date_to)]
-        elif merge_col:
-            col_labels = [f"全部{col_name}（合并）"]
-        else:
-            col_labels = [_fmt_val(fm, col_col, v, pmap) for v in _safe_sort(col_raw)]
-    else:
-        col_labels = []
-
-    index: Dict[tuple, int] = {}
-    for r in raw_rows:
-        count = r.get("store_count", 0)
-        if merge_split:
-            sl: Optional[str] = None
-        else:
-            sl = _fmt_val(fm, split_col, r.get(split_col), pmap)
-        if merge_row:
-            rk = f"全部{row_name}（合并）"
-        else:
-            rk = _fmt_val(fm, row_col, r.get(row_col), pmap) if row_col else ""
-        if col_col:
-            if col_is_month_merged:
-                cl = _range_label(date_from, date_to)
-            elif merge_col:
-                cl = f"全部{col_name}（合并）"
-            else:
-                cl = _fmt_val(fm, col_col, r.get(col_col), pmap)
-        else:
-            cl = ""
-        index[(sl, rk, cl)] = count
-
-    tables: List[dict] = []
-    for sl in split_labels:
-        rows = []
-        for rk in row_keys:
-            cells = {cl: index.get((sl, rk, cl), 0) for cl in col_labels}
-            rows.append({"row_key": rk, "cells": cells})
-        tables.append(
-            {
-                "title": _make_title(dimension, sl, merge_split, date_from, date_to, split_name, region_name),
-                "split_value": sl,
-                "row_header": row_name,
-                "col_header": col_name,
-                "row_keys": row_keys,
-                "col_keys": col_labels,
-                "rows": rows,
-            }
-        )
-
-    return tables
+    ``with_totals=False``：门店数是**去重计数**（COUNT(DISTINCT 门店编码)），不可加 ——
+    同一门店卖多个品种、或同一品种跨多个月都会被重复计入，单元格求和得到的「合计」偏大且无业务含义，
+    故门店数统计不产出任何行/列/表尾合计。
+    """
+    return pivot_tables(
+        raw_rows, fm, dimension, merge_for, date_from, date_to,
+        split_col, row_col, col_col, split_name, row_name, col_name, region_name,
+        pmap, value_key="store_count", with_totals=False,
+    )
 
 
 # ---------- CSV 导出 ----------
@@ -460,7 +240,7 @@ def _pivot(
 @router.get("/stats/store_count")
 def store_count(
     db_key: str = validate_db_key,
-    dimension: str = Query("city", description="统计维度: city | product | time"),
+    dimension: str = Query("city", description="统计维度: city | product | time | province"),
     region_level: str = Query("city", description="地域级别: city | province"),
     date_from: Optional[str] = Query(None, description="日期起 YYYY-MM-DD"),
     date_to: Optional[str] = Query(None, description="日期止 YYYY-MM-DD"),
@@ -470,22 +250,35 @@ def store_count(
     products: Optional[str] = Query(None, description="品类(商品编码)，英文逗号分隔"),
     merge_cities: bool = Query(False, description="合并地域维度为单表"),
     merge_products: bool = Query(False, description="合并品类维度为单表"),
-    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
+    merge_province_cities: bool = Query(False, description="已废弃（兼容保留）：省份模式不再展开省内城市，该参数无效"),
     map_names: bool = Query(False, description="品类编码映射为中文名（无映射保持编码）"),
     store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
     """实销门店数统计 — 通用三维度 + 地域级别切换。"""
-    return _run_store_count(
+    # 结果缓存：COUNT(DISTINCT 门店) 是大表上最贵的聚合，重复请求直接命中缓存
+    ck = stats_cache.cache_key(
+        "store_count", db_key, dimension=dimension, region_level=region_level,
+        date_from=date_from, date_to=date_to, merge_months=merge_months,
+        cities=cities, provinces=provinces, products=products,
+        merge_cities=merge_cities, merge_products=merge_products,
+        merge_province_cities=merge_province_cities, map_names=map_names, store_type=store_type,
+    )
+    hit = stats_cache.cache_get(ck)
+    if hit is not None:
+        return hit
+    result = _run_store_count(
         db_key, dimension, region_level, date_from, date_to, merge_months,
         cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type,
     )
+    stats_cache.cache_set(ck, result)
+    return result
 
 
 @router.get("/stats/store_count/export")
 def export_store_count(
     db_key: str = validate_db_key,
     user: dict = Depends(require_permission("export")),
-    dimension: str = Query("city", description="统计维度: city | product | time"),
+    dimension: str = Query("city", description="统计维度: city | product | time | province"),
     region_level: str = Query("city", description="地域级别: city | province"),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
@@ -495,7 +288,7 @@ def export_store_count(
     products: Optional[str] = Query(None),
     merge_cities: bool = Query(False),
     merge_products: bool = Query(False),
-    merge_province_cities: bool = Query(False, description="省份模式：合并省内城市为整省合计"),
+    merge_province_cities: bool = Query(False, description="已废弃（兼容保留）：省份模式不再展开省内城市，该参数无效"),
     map_names: bool = Query(False, description="品类编码映射为中文名（与页面口径一致）"),
     store_type: str = Query("all", description="门店类型：all=全部, chain=连锁(直营), franchise=加盟"),
 ):
@@ -510,7 +303,8 @@ def export_store_count(
                 cities, provinces, products, merge_cities, merge_products, merge_province_cities, map_names, store_type,
             )
             tables = result["tables"]
-            text = tables_to_csv_text(tables)
+            # additive=False：门店数是去重计数，不做合计
+            text = tables_to_csv_text(tables, additive=False)
     except ExportRejected as e:
         raise HTTPException(429, e.message, headers={"Retry-After": str(e.retry_after)})
 

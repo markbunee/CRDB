@@ -12,9 +12,17 @@ CONDA_HOME="${HOME}/miniforge3"        # conda 安装目录
 CONDA_ENV="py312torch222"              # conda 环境名（与 Mawork 后端一致）
 NVM_DIR="${HOME}/.nvm"                 # nvm 目录
 NODE_VERSION="v22.23.1"                # Node 版本
-PROJECT_ROOT="/mnt/d/Desktop/Project_Group/CRDB/drug_db_system"
-BACKEND_PORT=8000
-FRONTEND_PORT=5173
+
+# 项目根 = 本脚本所在目录（drug_db_system/）。
+# 刻意**不写死绝对路径**：本项目是从 CRDB 复制出来的，硬编码会把服务启动到另一个项目
+# 的代码上（现象：改了代码却完全不生效、新接口 404），排查代价极高。
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 后端端口默认 18000：本机 8000 已被 ticketsys-api 容器占用（docker 容器，
+# 脚本的 free_port 杀不掉），8080/80/443/5432 也被其它服务占着。
+# 需要改动就 `BACKEND_PORT=xxxx ./start.sh`，前端 proxy 会自动跟随。
+BACKEND_PORT="${BACKEND_PORT:-18000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 # 后端热重载：/mnt（WSL2 DrvFS）挂载或远程机上 watchfiles 递归监视
 # 会因 inotify 限制/内存不足而崩（Cannot allocate memory / os error 12），
 # 直接拖死后端进程。服务端长跑请保持 false。
@@ -30,7 +38,11 @@ export PG_USER="${PG_USER:-postgres}"
 export PG_PASSWORD="${PG_PASSWORD:-postgres}"
 export PG_ADMIN_DB="${PG_ADMIN_DB:-postgres}"
 
-# Excel 源数据目录（默认项目上两级 CRDB/）
+# 前端 vite 的 /api 代理目标：与后端端口联动，避免两处各写一个数字对不上
+export VITE_BACKEND_URL="${VITE_BACKEND_URL:-http://127.0.0.1:${BACKEND_PORT}}"
+
+# Excel 源数据目录（仅「导入 Excel」功能用到，日常查询不需要）。
+# 默认取项目根的上一级；若那里没有 xlsx，给出提示引导用环境变量指定。
 export EXCEL_DIR="${EXCEL_DIR:-$(dirname "$PROJECT_ROOT")}"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'
@@ -62,6 +74,15 @@ free_port() {
         warn "端口 $port 被占用，正在释放..."
         for p in $pids; do kill -9 "$p" 2>/dev/null; done
         sleep 1
+        return
+    fi
+    # 端口被占但拿不到 PID：几乎一定是 docker 容器（进程属 root）。
+    # 此时 kill 是无效的，必须提前报错 —— 否则后面只看到一句
+    # "address already in use"，前端所有 /api 请求会静默打到别的服务上（表现为 404）。
+    if ss -tln 2>/dev/null | grep -q ":$port "; then
+        err "端口 $port 被占用且无法自动释放（多为 docker 容器）。
+     查看占用者：docker ps --format '{{.Names}}\t{{.Ports}}'
+     换端口启动：BACKEND_PORT=18001 ./start.sh"
     fi
 }
 free_port "$BACKEND_PORT"
@@ -74,6 +95,13 @@ python -c "import fastapi, uvicorn, psycopg2, pandas, openpyxl, python_calamine,
     pip install -r backend/requirements.txt || err "依赖安装失败"
 }
 [ -d frontend/node_modules ] || warn "未检测到 frontend/node_modules，前端可能启动失败"
+
+# Excel 只在「导入数据」时用到，日常查询不需要；找不到就说清楚，别让人以为系统坏了
+if ! compgen -G "$EXCEL_DIR/*.xlsx" >/dev/null 2>&1 \
+   && ! compgen -G "$EXCEL_DIR/*.csv" >/dev/null 2>&1; then
+    warn "Excel 源数据目录（$EXCEL_DIR）下没有 xlsx/csv —— 日常查询不受影响，但「导入数据」会失败。
+     数据在别处时：EXCEL_DIR=/数据目录 ./start.sh"
+fi
 
 # ---------- 5. 启动后端 ----------
 log "启动后端 FastAPI → 端口 $BACKEND_PORT"
@@ -121,8 +149,10 @@ sleep 3
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════${NC}"
 echo -e "${GREEN}  医药销售数据库 已启动${NC}"
+echo -e "  项目  →  $PROJECT_ROOT"
 echo -e "  前端  →  http://localhost:$FRONTEND_PORT"
 echo -e "  后端  →  http://localhost:$BACKEND_PORT   (API 文档 /docs)"
+echo -e "  代理  →  前端 /api  →  $VITE_BACKEND_URL"
 echo -e "  数据库→  ${PG_USER}@${PG_HOST}:${PG_PORT}（请确保已启动）"
 echo -e "  Excel →  $EXCEL_DIR"
 echo -e "  停止  →  ${YELLOW}Ctrl + C${NC}"

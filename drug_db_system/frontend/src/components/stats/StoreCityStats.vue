@@ -3,7 +3,7 @@
     <!-- 维度切换 -->
     <div class="dimension-tabs">
       <div
-        v-for="d in dimensions"
+        v-for="d in dimensionTabs"
         :key="d.key"
         class="dim-tab"
         :class="{ active: dimension === d.key }"
@@ -33,8 +33,8 @@
               size="default"
               style="width: 280px"
             />
-            <el-checkbox v-model="mergeMonths" class="merge-checkbox">
-              {{ mergeMonthsLabel }}
+            <el-checkbox v-model="mergeMonths" class="merge-checkbox" :disabled="dimension === 'province'">
+              <span :title="dimension === 'province' ? '省份维度的行/列是 省内城市×品类，月份不参与布局，恒按日期区间合计' : '勾选后不按月份细分，整段区间合并为一个合计'">月份合计</span>
             </el-checkbox>
           </div>
         </div>
@@ -71,14 +71,14 @@
               v-model="mergeCities"
               class="merge-checkbox"
             >
-              合并{{ regionLabel }}
+              <span :title="`勾选后不按${regionLabel}细分，合并为一个合计`">{{ regionLabel }}合计</span>
             </el-checkbox>
             <el-checkbox
-              v-if="provinceExpanded"
+              v-if="dimension === 'province'"
               v-model="mergeProvinceCities"
               class="merge-checkbox"
             >
-              合并省份内的城市
+              <span title="勾选后每省内城市折叠成整省合计（一省一行）">省内城市合计</span>
             </el-checkbox>
           </div>
         </div>
@@ -97,7 +97,7 @@
               v-model="mergeProducts"
               class="merge-checkbox"
             >
-              合并品类
+              <span title="勾选后不按品类细分，合并为一个合计">品类合计</span>
             </el-checkbox>
           </div>
         </div>
@@ -127,7 +127,7 @@
           <el-button @click="handleReset">
             <el-icon><RefreshRight /></el-icon> 重置
           </el-button>
-          <el-button type="success" :loading="exporting" @click="handleExport">
+          <el-button type="success" @click="handleExport">
             <el-icon><Download /></el-icon> 导出CSV
           </el-button>
         </div>
@@ -148,7 +148,7 @@
         </div>
         <div class="tables-scroll-area">
           <div
-            v-for="(table, idx) in tables"
+            v-for="(table, idx) in visibleTables"
             :key="idx"
             class="stat-table-card"
           >
@@ -170,6 +170,8 @@
                     >
                       {{ c }}
                     </th>
+                    <!-- 故意不做「合计」列：门店数是去重计数（同一门店跨品种/跨月会重复），
+                         单元格求和偏大且无业务含义（合计由后端 with_totals=False 一并不产出） -->
                   </tr>
                 </thead>
                 <tbody>
@@ -187,6 +189,15 @@
                 </tbody>
               </table>
             </div>
+          </div>
+          <!-- 拆分表惰性渲染：城市维度可能上百张表，一次全渲染会明显卡顿 -->
+          <div v-if="tables.length > TABLES_INITIAL" class="tables-more">
+            <el-button v-if="!showAllTables" link type="primary" @click="showAllTables = true">
+              展开其余 {{ tables.length - TABLES_INITIAL }} 张表
+            </el-button>
+            <el-button v-else link type="info" @click="showAllTables = false">
+              收起，仅显示前 {{ TABLES_INITIAL }} 张
+            </el-button>
           </div>
         </div>
       </template>
@@ -210,6 +221,7 @@ import {
   InfoFilled,
   DataAnalysis,
   Location,
+  MapLocation,
   Goods,
   Calendar,
   Download,
@@ -217,8 +229,6 @@ import {
 import {
   DOWNLOAD_DISABLED,
   fetchStoreCount,
-  exportStoreCount,
-  downloadBlob,
   type StoreCountTable,
   type StoreCountDimension,
   type StoreCountRegion,
@@ -228,6 +238,7 @@ import { getCurrentMonthRange } from '@/utils/date'
 import { fetchStatsLatestRange } from '@/api/client'
 import { requireAdmin, requirePermission } from '@/utils/auth'
 import { logger } from '@/utils/logger'
+import { submitExport } from '@/composables/downloadQueue'
 import { getDbConfig } from '@/utils/dbConfig'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
@@ -249,6 +260,16 @@ const dimensions = [
   { key: 'time' as StoreCountDimension, name: '时间维度', desc: '按月份拆分 · 地域×品类', icon: Calendar },
 ]
 
+/**
+ * 「省份维度」= 原省份模式那套 省 → 市 展开布局，已单拎为独立维度；
+ * 只有支持省份的库（如大参林）才出现该标签页。
+ */
+const dimensionTabs = computed(() =>
+  hasProvince.value
+    ? [...dimensions, { key: 'province' as StoreCountDimension, name: '省份维度', desc: '按省份拆分 · 省内城市×品类', icon: MapLocation }]
+    : dimensions,
+)
+
 // 筛选字段
 const dimension = ref<StoreCountDimension>('city')
 const regionLevel = ref<StoreCountRegion>('city')
@@ -259,14 +280,22 @@ const provinces = ref('')
 const products = ref('')
 const mergeCities = ref(false)
 const mergeProducts = ref(false)
+// 仅在「省份维度」下有意义：把行轴上的省内城市折叠成整省合计
 const mergeProvinceCities = ref(false)
 // 门店类型筛选（连锁/加盟/全部），仅支持该维度的库（如大参林）显示
 const storeType = ref<'all' | 'chain' | 'franchise'>('all')
 
 // 结果
 const tables = ref<StoreCountTable[]>([])
+
+// 拆分表可能多达上百张（城市维度约 192 张），一次性铺满 DOM 是主要卡顿源；
+// 默认只渲染前 N 张，其余点击展开（不影响后端计算与导出，仅控制渲染量）。
+const TABLES_INITIAL = 30
+const showAllTables = ref(false)
+const visibleTables = computed(() =>
+  showAllTables.value ? tables.value : tables.value.slice(0, TABLES_INITIAL),
+)
 const loading = ref(false)
-const exporting = ref(false)
 
 // ---------- 品类映射（四个统计页共用同一份开关偏好） ----------
 const mapNames = ref(loadMapPref())
@@ -311,47 +340,32 @@ async function applyLatestRange() {
 
 watch(() => props.dbKey, applyLatestRange)
 
-const mergeMonthsLabel = computed(() =>
-  dimension.value === 'time' ? '合并为单表' : '合并月范围',
-)
-
-/** 省份模式：后端按省份展开成多张子表，表内 行=城市、列=品类（月份按整段区间合并） */
-const provinceExpanded = computed(
-  () => regionLevel.value === 'province' && hasProvince.value,
-)
-
+/**
+ * 实时口径说明：与后端 compute_layout 的角色分配一致，避免文案与实际布局不符。
+ * 地域级别（城市 / 省份）只是把「地域轴」换掉，拆表与行列角色由 dimension 决定，
+ * 因此省份级别与城市级别的表格结构完全相同；
+ * 「省 → 市 展开」是独立的省份维度（dimension=province），与地域级别开关无关。
+ */
 const hintText = computed(() => {
   const d = dimension.value
-  const parts: string[] = []
-  if (d === 'city') {
-    parts.push(mergeCities.value ? `全部${regionLabel.value}合并为一张表` : `每个${regionLabel.value}单独一张表`)
-  } else if (d === 'product') {
-    parts.push(mergeProducts.value ? '全部品类合并为一张表' : '每个品类单独一张表')
-  } else {
-    parts.push(mergeMonths.value ? '全部月份合并为一张表' : '每月单独一张表')
-  }
-  if (d === 'time') {
-    parts.push(`行=${regionLabel.value}，列=品类`)
-  } else if (d === 'city') {
-    parts.push(`行=品类，列=${mergeMonths.value ? '月份区间' : '月份'}`)
-  } else {
-    parts.push(`行=${regionLabel.value}，列=${mergeMonths.value ? '月份区间' : '月份'}`)
-  }
-  const mergeHints: string[] = []
-  if (mergeMonths.value) mergeHints.push('时间')
-  if (mergeCities.value) mergeHints.push(regionLabel.value)
-  if (mergeProducts.value) mergeHints.push('品类')
-  if (mergeHints.length) {
-    parts.push(`已合并：${mergeHints.join('、')}`)
-  }
-  if (provinceExpanded.value) {
-    if (mergeProvinceCities.value) {
-      parts.push('每省份内城市已合并为整省合计（一省一行）')
-    } else {
-      parts.push('省份展开：每个省份一张子表，表内 行=城市、列=品类（月份按区间合并）')
-    }
-  }
-  return '当前模式：' + parts.join('，')
+  const rl = regionLabel.value
+  let split: string
+  let row: string
+  let col: string
+  if (d === 'province') { split = '省份'; row = `省内${rl}`; col = '品类' }
+  else if (d === 'city') { split = rl; row = '品类'; col = '月份' }
+  else if (d === 'product') { split = '品类'; row = rl; col = '月份' }
+  else { split = '月份'; row = rl; col = '品类' }
+
+  const parts = [`按「${split}」拆表，行=${row}，列=${col}`]
+  const folded: string[] = []
+  if (mergeCities.value) folded.push(d === 'province' ? '省份' : rl)
+  if (d === 'province' && mergeProvinceCities.value) folded.push(`省内${rl}`)
+  if (mergeProducts.value) folded.push('品类')
+  if (d !== 'province' && mergeMonths.value) folded.push('月份')
+  if (folded.length) parts.push(`已折叠为合计：${folded.join('、')}`)
+  if (d === 'province') parts.push('月份不参与布局（恒按日期区间合计）')
+  return parts.join(' · ')
 })
 
 const totalRows = computed(() =>
@@ -361,15 +375,17 @@ const totalRows = computed(() =>
 function switchDimension(d: StoreCountDimension) {
   if (dimension.value === d) return
   dimension.value = d
-  mergeCities.value = false
-  mergeProducts.value = false
-  mergeMonths.value = false
+  // 省份维度固定「省份拆表 + 省内城市行」，地域筛选按省份给 → 一并把地域级别切到省份
+  if (d === 'province') regionLevel.value = 'province'
+  // 折叠开关按「轴」生效（与拆表方式无关），切换拆表方式时保留用户选择，不再清空
   tables.value = []
 }
 
 function onRegionChange() {
   if (regionLevel.value === 'city') {
     provinces.value = ''
+    // 省份维度只在省份级别下成立：切回城市级别时回落到城市维度，避免筛选器与布局错位
+    if (dimension.value === 'province') dimension.value = 'city'
   } else {
     cities.value = ''
   }
@@ -399,6 +415,7 @@ async function handleQuery() {
       store_type: storeType.value,
     })
     tables.value = res.tables
+    showAllTables.value = false   // 新结果默认回到「只渲染前 N 张」
     if (res.tables.length === 0) {
       ElMessage.info('查询结果为空，请调整筛选条件')
     }
@@ -424,16 +441,21 @@ function handleReset() {
   tables.value = []
 }
 
-async function handleExport() {
-  if (DOWNLOAD_DISABLED) return
+function handleExport() {
+  if (DOWNLOAD_DISABLED) {
+    ElMessage.warning('导出功能已关闭')
+    return
+  }
   if (!requirePermission('export', '导出统计数据')) return
   if (tables.value.length === 0) {
     ElMessage.warning('请先执行统计后再导出')
     return
   }
-  exporting.value = true
-  try {
-    const blob = await exportStoreCount(props.dbKey, {
+  submitExport({
+    dbKey: props.dbKey,
+    type: 'store_count',
+    name: '门店数统计',
+    params: {
       dimension: dimension.value,
       region_level: regionLevel.value,
       date_from: dateRange.value?.[0] || undefined,
@@ -447,16 +469,8 @@ async function handleExport() {
       merge_province_cities: mergeProvinceCities.value,
       map_names: mapNames.value,
       store_type: storeType.value,
-    })
-    const filename = `store_count_${dimension.value}_${regionLevel.value}.csv`
-    downloadBlob(blob, filename)
-    ElMessage.success('导出完成')
-  } catch (e: any) {
-    ElMessage.error('导出失败: ' + e.message)
-    logger.error('门店数导出失败: ' + e.message, 'StoreCityStats')
-  } finally {
-    exporting.value = false
-  }
+    },
+  })
 }
 
 function countClass(val: number | undefined): string {
@@ -471,8 +485,8 @@ function countClass(val: number | undefined): string {
 .store-city-stats {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  gap: 16px;
+  min-height: 100%;
+  gap: 12px;
 }
 
 .dimension-tabs {
@@ -486,7 +500,7 @@ function countClass(val: number | undefined): string {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   background: #fff;
   border: 1px solid #e4e7ed;
   border-radius: 8px;
@@ -532,15 +546,13 @@ function countClass(val: number | undefined): string {
 }
 
 .dim-desc {
-  font-size: 11px;
-  color: #909399;
-  line-height: 1.3;
+  display: none;
 }
 
 .filter-section {
   background: #fff;
   border-radius: 8px;
-  padding: 18px 22px;
+  padding: 14px 18px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
 }
@@ -626,6 +638,10 @@ function countClass(val: number | undefined): string {
   flex-shrink: 0;
 }
 
+.tables-more {
+  padding: 10px 0 2px;
+  text-align: center;
+}
 .tables-scroll-area {
   flex: 1;
   overflow: auto;

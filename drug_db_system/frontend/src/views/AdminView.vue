@@ -80,21 +80,12 @@
             {{ formatTime(row.last_login_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="密码" width="150">
+        <el-table-column label="密码" width="120">
           <template #default="{ row }">
             <span class="pwd-mask">{{ row.password_mask || '••••••' }}</span>
-            <el-button
-              link
-              type="primary"
-              size="small"
-              :disabled="row.role === 'admin'"
-              @click="openReset(row)"
-            >
-              重置
-            </el-button>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -104,6 +95,15 @@
               @click="toggleStatus(row)"
             >
               {{ row.status === 'active' ? '禁用' : '启用' }}
+            </el-button>
+            <el-button
+              link
+              type="danger"
+              size="small"
+              :disabled="row.role === 'admin'"
+              @click="onDeleteMember(row)"
+            >
+              删除（重新申请）
             </el-button>
           </template>
         </el-table-column>
@@ -169,38 +169,13 @@
         <el-form-item label="登录账号">
           <el-input v-model="approveForm.username" placeholder="不填则自动生成" />
         </el-form-item>
-        <el-form-item label="初始密码">
-          <el-input v-model="approveForm.password" placeholder="不填则由系统生成随机强密码" show-password />
+        <el-form-item label="登录密码">
+          <span class="done-text">由申请人自行设置，管理员不可见</span>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="approveVisible = false">取消</el-button>
         <el-button type="primary" :loading="approving" @click="onApprove">确认同意</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- ---------- 密码回显（仅一次）---------- -->
-    <el-dialog v-model="pwdVisible" title="请妥善保存密码" width="440px">
-      <el-alert
-        type="warning"
-        :closable="false"
-        show-icon
-        title="该密码仅显示这一次"
-        description="关闭后无法再次查看，请立即复制并转告成员，提醒其登录后尽快修改。"
-      />
-      <div class="pwd-box">
-        <div class="pwd-row">
-          <span class="pwd-label">账号</span>
-          <span class="pwd-value">{{ pwdResult.username }}</span>
-        </div>
-        <div class="pwd-row">
-          <span class="pwd-label">密码</span>
-          <span class="pwd-value strong">{{ pwdResult.password }}</span>
-          <el-button size="small" @click="copyPwd">复制</el-button>
-        </div>
-      </div>
-      <template #footer>
-        <el-button type="primary" @click="pwdVisible = false">我已保存</el-button>
       </template>
     </el-dialog>
 
@@ -252,7 +227,7 @@ import {
   fetchApplications,
   fetchMembers,
   rejectApplication,
-  resetMemberPassword,
+  deleteMember,
   setMemberPermissions,
   setMemberStatus,
   type Application,
@@ -268,15 +243,13 @@ const loadingApps = ref(false)
 
 const approveVisible = ref(false)
 const rejectVisible = ref(false)
-const pwdVisible = ref(false)
 const permVisible = ref(false)
 const approving = ref(false)
 const rejecting = ref(false)
 const savingPerm = ref(false)
 const currentApp = ref<Application | null>(null)
 const rejectReason = ref('')
-const approveForm = reactive({ username: '', password: '' })
-const pwdResult = reactive({ username: '', password: '' })
+const approveForm = reactive({ username: '' })
 const permForm = reactive({ uid: 0, username: '', permissions: [] as string[] })
 
 function formatTime(v: string | null): string {
@@ -332,7 +305,6 @@ function goBack() {
 function openApprove(row: Application) {
   currentApp.value = row
   approveForm.username = row.username || ''
-  approveForm.password = ''
   approveVisible.value = true
 }
 
@@ -340,14 +312,10 @@ async function onApprove() {
   if (!currentApp.value) return
   approving.value = true
   try {
-    const res = await approveApplication(currentApp.value.id, {
+    await approveApplication(currentApp.value.id, {
       username: approveForm.username.trim() || undefined,
-      password: approveForm.password || undefined,
     })
     approveVisible.value = false
-    pwdResult.username = res.user.username
-    pwdResult.password = res.initial_password
-    pwdVisible.value = true
     ElMessage.success('已同意申请，账号创建成功')
     loadAll()
   } catch (e: any) {
@@ -379,27 +347,23 @@ async function confirmReject() {
 }
 
 // ---------- 成员管理 ----------
-function openReset(row: AuthUser) {
-  ElMessageBox.prompt(
-    `将为「${row.display_name}」重置密码。留空则由系统生成随机强密码。`,
-    '重置密码',
-    {
-      confirmButtonText: '确认重置',
-      cancelButtonText: '取消',
-      inputPlaceholder: '留空则自动生成',
-      inputType: 'password',
-    },
-  )
-    .then(async ({ value }) => {
-      const res = await resetMemberPassword(row.id, value?.trim() || undefined)
-      pwdResult.username = res.username
-      pwdResult.password = res.new_password
-      pwdVisible.value = true
-      ElMessage.success('密码已重置')
-    })
-    .catch(() => {
-      /* 用户取消 */
-    })
+async function onDeleteMember(row: AuthUser) {
+  try {
+    await ElMessageBox.confirm(
+      `删除后「${row.display_name}」将无法登录，需用手机号重新提交申请并自行设置新密码。确认删除吗？`,
+      '删除成员（让其重新申请）',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteMember(row.id)
+    ElMessage.success('已删除，该成员需重新申请')
+    loadAll()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '删除失败')
+  }
 }
 
 async function toggleStatus(row: AuthUser) {
@@ -410,15 +374,6 @@ async function toggleStatus(row: AuthUser) {
     loadMembers()
   } catch (e: any) {
     ElMessage.error(e?.message || '操作失败')
-  }
-}
-
-async function copyPwd() {
-  try {
-    await navigator.clipboard.writeText(pwdResult.password)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.warning('复制失败，请手动记录')
   }
 }
 

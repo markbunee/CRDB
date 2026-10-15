@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "updated_at": "2026-10-14",
+  "note": "AI 问数能力目录 —— Python（校验/确认卡）与 Node ai-bridge（typebox schema/prompt）共用同一份，改口径只改这里。",
+
+  "slots": {
+    "region": {
+      "label": "统计范围",
+      "type": "region",
+      "group": "core",
+      "required": true,
+      "default": null,
+      "sub": {
+        "expand_province": {
+          "label": "省拆成城市呈现",
+          "type": "bool",
+          "default": false
+        }
+      }
+    },
+    "time": {
+      "label": "时间范围",
+      "type": "range",
+      "group": "core",
+      "required": true,
+      "default": null,
+      "sub": {
+        "granularity": {
+          "label": "粒度",
+          "type": "enum",
+          "values": ["merged", "monthly"],
+          "value_labels": { "merged": "区间合计", "monthly": "逐月" },
+          "default": "merged"
+        }
+      }
+    },
+    "product": {
+      "label": "品类",
+      "type": "entity",
+      "entity": "product",
+      "group": "core",
+      "required": false,
+      "default": null,
+      "multi": true
+    },
+    "metric": {
+      "label": "指标",
+      "type": "enum",
+      "group": "core",
+      "required": true,
+      "default": null,
+      "values": ["boxes", "amount", "stores", "both"],
+      "value_labels": {
+        "boxes": "实销盒数",
+        "amount": "实销金额",
+        "stores": "动销门店数",
+        "both": "盒数+金额+门店数"
+      }
+    },
+    "store_type": {
+      "label": "门店类型",
+      "type": "enum",
+      "group": "adv",
+      "required": false,
+      "default": "all",
+      "values": ["all", "chain", "franchise"],
+      "value_labels": { "all": "全部", "chain": "连锁(直营)", "franchise": "加盟" }
+    },
+    "compare": {
+      "label": "对比",
+      "type": "enum",
+      "group": "adv",
+      "required": false,
+      "default": "none",
+      "values": ["none", "yoy", "mom", "both"],
+      "value_labels": { "none": "不对比", "yoy": "同比", "mom": "环比", "both": "同比+环比" }
+    },
+    "split": {
+      "label": "呈现方式",
+      "type": "enum",
+      "group": "adv",
+      "required": false,
+      "default": "none",
+      "values": ["none", "city", "product", "time", "province"],
+      "value_labels": {
+        "none": "不拆表(出合计)",
+        "city": "按城市拆表",
+        "product": "按品类拆表",
+        "time": "按月份拆表",
+        "province": "按省份拆表"
+      }
+    },
+    "top_n": {
+      "label": "排名",
+      "type": "int",
+      "group": "adv",
+      "required": false,
+      "default": null,
+      "min": 1,
+      "max": 500
+    }
+  },
+
+  "capabilities": {
+    "q_overview": {
+      "label": "实销总览",
+      "desc": "盒数 + 金额 + 动销门店数，一次扫描同时出（模糊问法兜底套餐）",
+      "backend": "box_count_multi",
+      "aliases": ["实销情况", "销售情况", "经营情况", "整体表现", "卖得怎么样", "实销", "情况"],
+      "fixed": { "metric": "both" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "compare", "split", "top_n"],
+      "db_keys": "*"
+    },
+    "q_boxes": {
+      "label": "实销盒数统计",
+      "desc": "SUM(数量)",
+      "backend": "box_count",
+      "aliases": ["盒数", "数量", "销量", "多少盒", "实销盒数", "卖了多少盒"],
+      "fixed": { "metric": "boxes" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "compare", "split", "top_n"],
+      "db_keys": "*"
+    },
+    "q_amount": {
+      "label": "实销金额统计",
+      "desc": "SUM(数量 × 开票价)",
+      "backend": "box_count",
+      "aliases": ["金额", "销售额", "多少钱", "实销金额", "卖了多少钱"],
+      "fixed": { "metric": "amount" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "compare", "split", "top_n"],
+      "db_keys": "*"
+    },
+    "q_stores": {
+      "label": "实销门店数统计",
+      "desc": "COUNT(DISTINCT 门店)",
+      "backend": "store_count",
+      "aliases": ["门店数", "动销门店", "覆盖门店", "多少家店", "几家店"],
+      "fixed": { "metric": "stores" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "split", "top_n"],
+      "db_keys": "*"
+    },
+    "q_trend": {
+      "label": "销售趋势分析",
+      "desc": "按月份逐月呈现",
+      "backend": "box_count",
+      "aliases": ["趋势", "逐月", "每月", "月度变化", "走势", "月度趋势"],
+      "fixed": { "metric": "boxes", "split": "time" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "top_n"],
+      "db_keys": "*"
+    },
+    "q_store_rank": {
+      "label": "门店排行",
+      "desc": "门店产出排行 + 品类 Top3（仅大参林）",
+      "backend": "store_ability",
+      "aliases": ["门店排行", "门店排名", "哪家店", "最好的店", "top门店", "卖得最好的店", "排行"],
+      "fixed": { "metric": "boxes" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "top_n"],
+      "db_keys": ["dashenlin"]
+    },
+    "q_store_trend": {
+      "label": "单门店趋势",
+      "desc": "某个门店按天产出",
+      "backend": "store_ability_trend",
+      "aliases": ["门店趋势", "这家店每天", "按天"],
+      "fixed": { "metric": "boxes" },
+      "required": ["region", "time", "store_name"],
+      "supports": ["product"],
+      "db_keys": ["dashenlin"]
+    },
+    "q_turnover": {
+      "label": "动销率 / 库存",
+      "desc": "实销门店数 ÷ 库存门店数（仅大参林）",
+      "backend": "inventory_turnover",
+      "aliases": ["动销率", "库存", "积压", "效期", "库存情况"],
+      "fixed": { "metric": "stores" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type"],
+      "db_keys": ["dashenlin"]
+    },
+    "q_kpi": {
+      "label": "经营大盘",
+      "desc": "看板 KPI + 趋势 + 拆解",
+      "backend": "dashboard_summary",
+      "aliases": ["大盘", "整体", "看板", "经营概况"],
+      "fixed": { "metric": "both" },
+      "required": ["region", "time"],
+      "supports": ["product", "store_type", "top_n"],
+      "db_keys": "*"
+    }
+  }
+}

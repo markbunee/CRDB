@@ -2,8 +2,9 @@
 """认证与授权基础设施：用户表/申请表、密码哈希、JWT、登录限流。
 
 安全设计（面向公网部署）：
-1. 密码一律 bcrypt 加盐哈希存储，**永不明文落库**；后台只显示掩码 + 「重置密码」，
-   重置/新成员审批时由管理员或系统设定密码，并**仅回显一次**。
+1. 密码一律 bcrypt 加盐哈希存储，**永不明文落库**；密码由用户在申请账号时**自行设置**，
+   审批通过时直接沿用该哈希，**管理员与所有接口全程接触不到明文**，后台只显示掩码。
+   管理员不再有「设定/重置密码」的能力：只能删除账号，让成员重新提交申请并重设密码。
 2. 令牌为 JWT(HS256)，通过 Authorization: Bearer 传递；不使用 Cookie，天然免疫 CSRF。
 3. 登录失败限流（同 IP+账号 连续失败 5 次锁定 5 分钟），防暴力破解。
 4. 管理员禁用成员后，令牌在状态缓存 TTL（默认 60s）内失效，无需等令牌自然过期。
@@ -213,6 +214,11 @@ def ensure_auth_tables() -> None:
                 "permissions TEXT NOT NULL DEFAULT '[]'"
             )
             cur.execute(_CREATE_APPLICATIONS)
+            # 旧表可能缺少 password_hash 列（申请人自设密码），幂等补列
+            cur.execute(
+                "ALTER TABLE crdb_applications ADD COLUMN IF NOT EXISTS "
+                "password_hash TEXT NOT NULL DEFAULT ''"
+            )
             cur.execute("SELECT COUNT(*) FROM crdb_users")
             (count,) = cur.fetchone()
             if count:
@@ -267,6 +273,18 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
     return _row_to_user(row) if row else None
 
 
+def get_user_by_phone(phone: str) -> Optional[Dict[str, Any]]:
+    """按手机号查用户（登录标识为手机号）。同号重复时取 id 最小者。"""
+    with auth_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_USER_COLS} FROM crdb_users WHERE phone = %s ORDER BY id LIMIT 1",
+                (phone,),
+            )
+            row = cur.fetchone()
+    return _row_to_user(row) if row else None
+
+
 def get_user_auth(username: str) -> Optional[Dict[str, Any]]:
     """登录专用：额外取回 password_hash（仅内存中使用，绝不外传）。"""
     with auth_conn() as conn:
@@ -274,6 +292,22 @@ def get_user_auth(username: str) -> Optional[Dict[str, Any]]:
             cur.execute(
                 f"SELECT {_USER_COLS}, password_hash FROM crdb_users WHERE username = %s",
                 (username,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    d = _row_to_user(row[:-1])
+    d["password_hash"] = row[-1]
+    return d
+
+
+def get_user_auth_by_phone(phone: str) -> Optional[Dict[str, Any]]:
+    """登录专用：按手机号取回 password_hash（仅内存中使用，绝不外传）。"""
+    with auth_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_USER_COLS}, password_hash FROM crdb_users WHERE phone = %s ORDER BY id LIMIT 1",
+                (phone,),
             )
             row = cur.fetchone()
     if not row:
@@ -326,6 +360,35 @@ def create_user(
             )
             (uid,) = cur.fetchone()
     return get_user_by_id(uid)
+
+
+def create_user_with_hash(
+    username: str, display_name: str, phone: str, password_hash: str,
+    role: str = ROLE_MEMBER, permissions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """用已有 bcrypt 哈希建账号（申请人自设密码场景：管理员全程接触不到明文）。
+
+    与 create_user 的区别：不再生成/回显初始密码，故 must_change_password 置为 False。
+    """
+    perms = permissions or []
+    with auth_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO crdb_users (username, display_name, phone, password_hash, role, status,"
+                " must_change_password, permissions) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (username, display_name, phone, password_hash, role, STATUS_ACTIVE, False,
+                 json.dumps(perms)),
+            )
+            (uid,) = cur.fetchone()
+    return get_user_by_id(uid)
+
+
+def delete_user(uid: int) -> None:
+    """删除账号，让其重新申请：删除后原成员需用手机号重新提交申请并重设密码。"""
+    with auth_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM crdb_users WHERE id = %s", (uid,))
+    _status_cache.pop(uid, None)
 
 
 def set_user_permissions(uid: int, permissions: List[str]) -> None:
@@ -400,13 +463,16 @@ def _row_to_app(row) -> Dict[str, Any]:
     return d
 
 
-def create_application(display_name: str, phone: str, username: str = "", note: str = "") -> Dict[str, Any]:
+def create_application(
+    display_name: str, phone: str, password_hash: str, username: str = "", note: str = "",
+) -> Dict[str, Any]:
+    """新增申请。password_hash 为申请人自设密码的 bcrypt 哈希，明文绝不落库。"""
     with auth_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO crdb_applications (display_name, phone, username, note)"
-                " VALUES (%s, %s, %s, %s) RETURNING id",
-                (display_name, phone, username, note),
+                "INSERT INTO crdb_applications (display_name, phone, username, note, password_hash)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (display_name, phone, username, note, password_hash),
             )
             (aid,) = cur.fetchone()
     return get_application(aid)
@@ -418,6 +484,15 @@ def get_application(aid: int) -> Optional[Dict[str, Any]]:
             cur.execute(f"SELECT {_APP_COLS} FROM crdb_applications WHERE id = %s", (aid,))
             row = cur.fetchone()
     return _row_to_app(row) if row else None
+
+
+def get_application_password_hash(aid: int) -> str:
+    """取申请时用户自设密码的哈希（审批建账号时直接沿用，管理员无需也无法得知明文）。"""
+    with auth_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT password_hash FROM crdb_applications WHERE id = %s", (aid,))
+            row = cur.fetchone()
+    return (row[0] if row else "") or ""
 
 
 def list_applications(status: str = "") -> List[Dict[str, Any]]:

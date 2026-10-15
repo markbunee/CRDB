@@ -45,6 +45,7 @@ import { DataAnalysis } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { fetchStoreAbilityTrend, type StoreAbilityTrendPoint } from '@/api/client'
 import { logger } from '@/utils/logger'
+import { onWindowResize } from '@/utils/resize'
 
 const props = defineProps<{
   modelValue: boolean
@@ -186,18 +187,24 @@ function handleResize() {
   try { chart?.resize() } catch (_) { /* noop */ }
 }
 
+// 仅在弹窗打开期间订阅，且走统一防抖（手机端滚动时地址栏收放会高频触发 resize）
+let stopResize: (() => void) | null = null
+
 watch(visible, (v) => {
   if (v) {
     load()
-    window.addEventListener('resize', handleResize)
+    stopResize?.()
+    stopResize = onWindowResize(handleResize)
   } else {
-    window.removeEventListener('resize', handleResize)
+    stopResize?.()
+    stopResize = null
     disposeChart()
   }
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', handleResize)
+  stopResize?.()
+  stopResize = null
   disposeChart()
 })
 </script>

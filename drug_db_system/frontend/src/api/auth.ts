@@ -33,8 +33,9 @@ export interface Application {
 
 // ---------- 登录 / 登出 / 当前用户 ----------
 
-export function login(username: string, password: string) {
-  return request<LoginResult>('/api/auth/login', { username, password }, 'POST')
+/** 登录：手机号 + 密码（密码为申请账号时用户自己设置的） */
+export function login(phone: string, password: string) {
+  return request<LoginResult>('/api/auth/login', { phone, password }, 'POST')
 }
 
 export function logout() {
@@ -55,9 +56,11 @@ export function changePassword(old_password: string, new_password: string) {
 
 // ---------- 新成员申请（无需登录）----------
 
+/** 申请账号：姓名 + 手机号 + 自设密码（密码由用户自己设置，管理员看不到） */
 export function applyMember(payload: {
   display_name: string
   phone: string
+  password: string
   username?: string
   note?: string
 }) {
@@ -81,12 +84,9 @@ export function fetchApplications(status = '') {
   )
 }
 
-/** 同意申请：返回初始密码（后台只会明文回显这一次） */
-export function approveApplication(
-  id: number,
-  payload: { username?: string; password?: string } = {},
-) {
-  return request<{ message: string; user: AuthUser; initial_password: string }>(
+/** 同意申请：密码沿用申请人自设的哈希，后端不返回任何明文 */
+export function approveApplication(id: number, payload: { username?: string } = {}) {
+  return request<{ message: string; user: AuthUser }>(
     `/api/auth/applications/${id}/approve`,
     payload,
     'POST',
@@ -101,12 +101,12 @@ export function rejectApplication(id: number, reason = '') {
   )
 }
 
-/** 重置成员密码：返回新密码（仅回显一次） */
-export function resetMemberPassword(uid: number, password?: string) {
-  return request<{ message: string; username: string; new_password: string }>(
-    `/api/auth/members/${uid}/reset-password`,
-    password ? { password } : {},
-    'POST',
+/** 删除成员账号：管理员改不了密码，只能删除让其用手机号重新申请并自设密码 */
+export function deleteMember(uid: number) {
+  return request<{ message: string; username: string }>(
+    `/api/auth/members/${uid}`,
+    undefined,
+    'DELETE',
   )
 }
 

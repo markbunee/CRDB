@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from .auth import decode_token, ensure_auth_tables, get_user_status
 from .config import FRONTEND_DIR
@@ -28,9 +29,12 @@ from .memory_guard import (
     guard_status,
 )
 from .services.export_gate import status as export_gate_status
+from .services.query_gate import QueryRejected, acquire as query_acquire, status as query_gate_status
+from .services.export_jobs import ensure_workers
 from .routers import (meta, rows, export, stats, frontend_log, import_excel,
                       csv_export, stats_store, stats_box, stats_store_ability,
-                      product_map, dashboard, filter_options, inventory, auth)
+                      product_map, dashboard, filter_options, inventory, auth,
+                      export_jobs, ai)
 
 # 启动即初始化日志（写入 backend/log.txt）
 setup_logging()
@@ -50,6 +54,20 @@ def on_startup():
         ensure_auth_tables()
     except Exception as e:
         logger.exception("初始化认证表失败: %s", e)
+    # 异步导出「下载中心」的后台 worker（调度 + 清理各一条守护线程，幂等）
+    try:
+        ensure_workers()
+    except Exception as e:
+        logger.exception("异步导出 worker 启动失败: %s", e)
+    # AI 埋点库 + 模型配置表（同一个 SQLite，独立于三张业务库：
+    # 业务库会被导入/清空，埋点与用户模型配置必须留存）
+    try:
+        from .services.ai_analytics import init_db as init_ai_db
+        from .services.ai_model_config import init_db as init_model_cfg_db
+        init_ai_db()
+        init_model_cfg_db()
+    except Exception as e:
+        logger.exception("AI 埋点/模型配置库初始化失败: %s", e)
     logger.info("后端服务启动完成，日志文件: backend/log.txt")
 
 
@@ -83,6 +101,53 @@ async def block_export(request: Request, call_next):
     if DISABLE_EXPORT and "/export" in request.url.path:
         return JSONResponse({"detail": "当前环境已关闭导出/下载功能"}, status_code=403)
     return await call_next(request)
+
+
+# ---------- 查询闸门（始终开启的并发/频率熔断器）----------
+# 只覆盖「重查询」GET 接口（/rows、/stats、/dashboard、/inventory），
+# 防止多人同时拉宽区间查询把小内存服务器的 DB/CPU 打满。
+# 轻量元数据接口（/api/dbs、/api/filter_options、/api/product-map 等）**不**加闸门，
+# 保证重查询排队时页面基础信息仍能加载。
+# 注意注册顺序：本中间件须「在内层」于鉴权中间件（见文件顶部执行顺序说明），
+# 这样 request.state.user 已由鉴权写入，可取用户 ID 做频率限制。
+# 导出类接口已自带 export_gate 且路径含 /export，这里直接豁免，避免双重闸门。
+# 注意：AI 的执行入口是 POST（/api/{db}/ai/confirm），而本中间件只拦 GET，
+# 所以 AI **不在这里覆盖**，由 routers/ai.py 的 _run_guarded() 显式取同名额度补齐。
+# （早先这里还写过一个 "/ai/" 段：AI 端点全是 POST，它永远不可能命中，已删）
+_QUERY_GATE_HEAVY = ("/rows", "/stats/", "/dashboard/", "/inventory/")
+
+
+def _is_heavy_query(path: str) -> bool:
+    if "/export" in path:
+        return False
+    return any(seg in path for seg in _QUERY_GATE_HEAVY)
+
+
+@app.middleware("http")
+async def query_gate_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method != "GET" or not _is_heavy_query(path):
+        return await call_next(request)
+
+    user = getattr(request.state, "user", None)
+    user_id = user.get("id") if isinstance(user, dict) else None
+    # 频率隔离粒度 = 路径 + 查询串：不同筛选条件的正常查询互不误伤，
+    # 只拦截「同一用户、同一筛选」的重复提交。
+    freq_key = f"{path}?{request.url.query}"
+    try:
+        # 获取并发名额可能阻塞等待（最多 QUERY_QUEUE_WAIT_SEC 秒），
+        # 放到线程池执行，避免阻塞事件循环把整个服务拖成「假死」。
+        slot = await run_in_threadpool(query_acquire, user_id, path=path, freq_key=freq_key)
+    except QueryRejected as e:
+        return JSONResponse(
+            {"detail": e.message},
+            status_code=429,
+            headers={"Retry-After": str(e.retry_after)},
+        )
+    try:
+        return await call_next(request)
+    finally:
+        slot.release()
 
 
 # ---------- 鉴权中间件（登录后才可访问业务接口）----------
@@ -192,6 +257,12 @@ app.include_router(product_map.router)
 app.include_router(dashboard.router)
 app.include_router(filter_options.router)
 app.include_router(inventory.router)
+app.include_router(export_jobs.router)
+# AI 问数：业务路由（/api/{db_key}/ai/*）+ 埋点后台（/api/ai-admin/*，仅管理员）
+# + 模型配置（/api/ai-models/*，每个登录用户维护自己的）
+app.include_router(ai.router)
+app.include_router(ai.admin_router)
+app.include_router(ai.models_router)
 
 
 # ---------- 健康检查 ----------
@@ -215,6 +286,17 @@ def export_gate(request: Request, _admin: dict = Depends(require_admin)):
     这时应该先让用户缩小筛选范围，而不是去调大 EXPORT_MAX_CONCURRENT。
     """
     return {**export_gate_status(), "memory": guard_status(), "path": str(request.url.path)}
+
+
+@app.get("/api/query-gate")
+def query_gate_endpoint(request: Request, _admin: dict = Depends(require_admin)):
+    """查看查询闸门实时状态（并发上限 / 正在跑的查询 / 累计拒绝次数）。仅管理员。
+
+    普通查询（/rows、/stats、/dashboard、/inventory）把服务器挤卡时看这里：
+    若 active 长期等于 max_concurrent，说明并发阀在起作用（用户会收到 429），
+    应提示用户缩小筛选范围或错峰，而非调大 QUERY_MAX_CONCURRENT。
+    """
+    return {**query_gate_status(), "memory": guard_status(), "path": str(request.url.path)}
 
 
 # ---------- 前端托管（仅生产模式） ----------

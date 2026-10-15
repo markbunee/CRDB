@@ -11,7 +11,7 @@
 - 时间过滤统一走「月度」列（已建索引），保证千万级数据下的聚合性能。
 """
 import os
-import time
+from datetime import datetime
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -19,8 +19,11 @@ from fastapi import APIRouter, HTTPException, Query
 from psycopg2 import sql
 
 from ..dependencies import validate_db_key
-from ..models.schema_def import get_cfg, get_field_map
+from ..models.schema_def import get_cfg, get_field_map, supports_inventory
+from ..services import stats_cache
 from ..database import get_conn
+from ..services.product_map import get_product_map_full
+from ..services.ttl_cache import TTLCache
 from ..utils.serialization import jsonable_rows
 from ..logger import get_logger
 
@@ -28,12 +31,17 @@ router = APIRouter(prefix="/api/{db_key}", tags=["dashboard"])
 logger = get_logger("app.routers.dashboard")
 
 
-# ---------- 结果缓存（TTL） ----------
+# ---------- 结果缓存（TTL + 容量上限） ----------
 # 看板是读多写少的静态分析数据，但单次查询可能扫描千万级大表。
 # 加 TTL 缓存可避免「同一筛选反复全表扫描」，显著减轻小内存服务器压力。
-# 数据变更（导入/清空）时由对应接口调用 invalidate_dashboard_cache 主动失效。
-_DASH_CACHE: dict = {}
-_DASH_CACHE_TTL = int(os.environ.get("DASHBOARD_CACHE_TTL", "300"))
+# 数据变更（导入/清空/映射改价）时由对应接口调用 invalidate_dashboard_cache 主动失效。
+# 数据导入/清空会主动失效，故 TTL 可放长，避免用户隔几分钟再打开看板时缓存已过期；
+# 同时用 max_entries 兜住「筛选组合过多导致缓存膨胀」的内存风险。
+_DASH_CACHE = TTLCache(
+    ttl=int(os.environ.get("DASHBOARD_CACHE_TTL", "3600")),
+    max_entries=int(os.environ.get("DASHBOARD_CACHE_MAX_ENTRIES", "150")),
+    name="dashboard",
+)
 
 
 def _dash_cache_key(name: str, db_key: str, **kw) -> str:
@@ -42,24 +50,23 @@ def _dash_cache_key(name: str, db_key: str, **kw) -> str:
 
 
 def _dash_cache_get(key: str):
-    item = _DASH_CACHE.get(key)
-    if item and (time.time() - item[0]) < _DASH_CACHE_TTL:
-        return item[1]
-    if item:
-        _DASH_CACHE.pop(key, None)
-    return None
+    return _DASH_CACHE.get(key)
 
 
 def _dash_cache_set(key: str, value):
-    _DASH_CACHE[key] = (time.time(), value)
+    _DASH_CACHE.set(key, value)
 
 
 def invalidate_dashboard_cache(_db_key: str | None = None):
-    """数据写入（导入/清空）后调用，清空看板缓存。
+    """数据写入（导入/清空/映射改价）后调用，清空看板缓存。
 
     _db_key 当前保留以便将来按需按库失效；现在看板数据量小，直接整体清空。
+
+    这里顺带清空**统计结果缓存**：所有数据写入点都已调用本函数，在此统一失效
+    可以保证不会漏掉某个入口导致统计返回旧数据（符合「数据一变、派生缓存全失效」）。
     """
     _DASH_CACHE.clear()
+    stats_cache.invalidate_stats_cache(_db_key)
 
 
 # ---------- 列判定 ----------
@@ -80,6 +87,87 @@ def _store_type_expr(cfg: dict) -> Optional[sql.Composable]:
             "THEN '加盟' ELSE '连锁' END"
         ).format(daqu=sql.Identifier("大区"), yingyun=sql.Identifier("营运区"))
     return None
+
+
+# ---------- 金额口径（数量 × 品类开票价） ----------
+def _amount_sql(db_key: str, cfg: dict, fm: dict):
+    """返回 (join_sql, amount_expr, extra_params)。
+
+    无开票价映射时返回 None，此时 dashboard 金额字段统一为 0/None。
+    实现与 stats_box.py 一致：用 VALUES 常量集 LEFT JOIN，未配置价格的品类按 0 计。
+    """
+    full_map = get_product_map_full(db_key)
+    pvals = [
+        (code, float(v["price"]))
+        for code, v in full_map.items()
+        if v.get("price") is not None
+    ]
+    if not pvals:
+        return None
+    join_sql = sql.SQL(
+        " LEFT JOIN (VALUES {}) AS p(code, price) ON CAST({t}.{pc} AS TEXT) = p.code"
+    ).format(
+        sql.SQL(", ").join(sql.SQL("(%s::text, %s::numeric)") for _ in pvals),
+        t=sql.Identifier(cfg["table"]),
+        pc=sql.Identifier(fm["product_col"]),
+    )
+    amount_expr = sql.SQL("SUM({q} * COALESCE(p.price, 0))").format(
+        q=sql.Identifier(fm["qty_col"])
+    )
+    extra_params = [x for pair in pvals for x in pair]
+    return join_sql, amount_expr, extra_params
+
+
+def _monthly_amounts(
+    db_key: str, cfg: dict, fm: dict, where: sql.Composable, params: list,
+) -> dict:
+    """按月聚合金额（元），返回 { 'YYYY-MM': amount }。where 已含时间窗与 JOIN 参数。"""
+    amount_sql = _amount_sql(db_key, cfg, fm)
+    if amount_sql is None:
+        return {}
+    join_sql, amount_expr, extra_params = amount_sql
+    mc = sql.Identifier(fm["month_col"])
+    t = sql.Identifier(cfg["table"])
+    stmt = sql.SQL(
+        "SELECT to_char(date_trunc('month', {mc}), 'YYYY-MM') AS m, "
+        "{amt} AS amount FROM {t}{join}{w} GROUP BY m ORDER BY m"
+    ).format(mc=mc, amt=amount_expr, t=t, join=join_sql, w=where)
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            cur.execute(stmt, extra_params + params)
+            rows = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    return {r["m"]: (float(r["amount"]) if r["amount"] is not None else 0.0) for r in rows}
+
+
+def _monthly_boxes_amounts(
+    db_key: str, cfg: dict, fm: dict, where: sql.Composable, params: list,
+) -> tuple:
+    """一次扫描同时得到盒数/金额的月度字典，返回 (boxes, amounts)。
+
+    把原先 `_monthly_boxes` + `_monthly_amounts` 两次千万级扫描合并为一次（KPI 同比用）。
+    """
+    mc = sql.Identifier(fm["month_col"])
+    q = sql.Identifier(fm["qty_col"])
+    t = sql.Identifier(cfg["table"])
+    amount_sql = _amount_sql(db_key, cfg, fm)
+    if amount_sql is not None:
+        join_sql, amount_expr, extra_params = amount_sql
+        amount_sel = sql.SQL(", {} AS amount").format(amount_expr)
+    else:
+        join_sql = sql.SQL("")
+        extra_params = []
+        amount_sel = sql.SQL(", NULL AS amount")
+    stmt = sql.SQL(
+        "SELECT to_char(date_trunc('month', {mc}), 'YYYY-MM') AS m, "
+        "SUM({q}) AS boxes{amt} FROM {t}{join}{w} GROUP BY m ORDER BY m"
+    ).format(mc=mc, q=q, amt=amount_sel, t=t, join=join_sql, w=where)
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            cur.execute(stmt, extra_params + params)
+            rows = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    boxes = {r["m"]: (float(r["boxes"]) if r["boxes"] is not None else 0.0) for r in rows}
+    amounts = {r["m"]: (float(r["amount"]) if r["amount"] is not None else 0.0) for r in rows}
+    return boxes, amounts, (amount_sql is not None)
 
 
 # ---------- WHERE 组装（时间窗由调用方通过 date_from/date_to 控制） ----------
@@ -198,6 +286,67 @@ def _month_range(db_key: str, cfg: dict, fm: dict) -> tuple:
     return fmt(mn), fmt(mx)
 
 
+def _default_range(db_key: str, cfg: dict, fm: dict) -> tuple:
+    """默认区间：今年 1 月 1 日 ~ 数据最新月（首个自然日）。
+
+    首屏请求不带日期时由后端直接落到该区间，避免前端「先全量再按默认区间重查」
+    造成的两次千万级聚合（这是看板打开慢的主因）。
+    数据起始月晚于今年 1 月时，从数据起始月开始。
+    返回 ('YYYY-MM-DD', 'YYYY-MM-DD')；无数据返回 (None, None)。
+    """
+    mn, mx = _month_range(db_key, cfg, fm)
+    if not mx:
+        return None, None
+    year_start = f"{datetime.now().year:04d}-01"
+    from_ym = mn if (mn and mn > year_start) else year_start
+    if from_ym > mx:
+        from_ym = mx
+    return f"{from_ym}-01", f"{mx}-01"
+
+
+def _month_list(df: str, dt: str) -> list:
+    """生成闭区间 ['YYYY-MM', ...]，用于补齐无数据的月份。"""
+    out = []
+    if not (df and dt):
+        return out
+    y, m = int(df[:4]), int(df[5:7])
+    ey, em = int(dt[:4]), int(dt[5:7])
+    while (y, m) <= (ey, em):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def _prev_month(ym: str) -> str:
+    y, m = int(ym[:4]), int(ym[5:7])
+    m -= 1
+    if m < 1:
+        m = 12
+        y -= 1
+    return f"{y:04d}-{m:02d}"
+
+
+def _monthly_stores(
+    db_key: str, cfg: dict, fm: dict, where: sql.Composable, params: list,
+) -> dict:
+    """按月聚合去重门店数，返回 { 'YYYY-MM': stores }。where 已含时间窗。"""
+    mc = sql.Identifier(fm["month_col"])
+    s = sql.Identifier(fm["store_col"])
+    t = sql.Identifier(cfg["table"])
+    stmt = sql.SQL(
+        "SELECT to_char(date_trunc('month', {mc}), 'YYYY-MM') AS m, "
+        "COUNT(DISTINCT {s}) AS stores FROM {t}{w} GROUP BY m ORDER BY m"
+    ).format(mc=mc, s=s, t=t, w=where)
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            cur.execute(stmt, params)
+            rows = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    return {r["m"]: int(r["stores"]) if r["stores"] is not None else 0 for r in rows}
+
+
 def _yoy_window(
     date_from: Optional[str], date_to: Optional[str], min_month: Optional[str] = None
 ):
@@ -267,9 +416,36 @@ def dashboard_options(db_key: str = validate_db_key):
         "products": products,
         "month_range": month_range,
         "supports_store_type": _store_type_expr(cfg) is not None,
+        "supports_inventory": supports_inventory(db_key),
     }
     _dash_cache_set(key, result)
     return result
+
+
+def _options_from_breakdown(db_key: str, cfg: dict, fm: dict, breakdown: dict) -> dict:
+    """用已算好的三维度拆解结果拼出筛选选项，避免再跑 3 次 DISTINCT 全表扫描。
+
+    仅在「无任何筛选」的首屏使用（此时 breakdown 即全量维度），语义与 dashboard_options 一致。
+    """
+    mn, mx = _month_range(db_key, cfg, fm)
+    products = []
+    for p in breakdown.get("product", []):
+        name = str(p.get("name") or "")
+        # breakdown 的产品名格式为「商品名 (编码)」，去掉尾部编码还原纯名称
+        if name.endswith(")") and " (" in name:
+            name = name.rsplit(" (", 1)[0]
+        products.append({"code": str(p.get("key")), "name": name})
+    return {
+        "provinces": [p.get("name") for p in breakdown.get("province", []) if p.get("name")],
+        "cities": [c.get("name") for c in breakdown.get("city", []) if c.get("name")],
+        "products": products,
+        "month_range": {
+            "min": f"{mn}-01" if mn else None,
+            "max": f"{mx}-01" if mx else None,
+        },
+        "supports_store_type": _store_type_expr(cfg) is not None,
+        "supports_inventory": supports_inventory(db_key),
+    }
 
 
 # ---------- KPI ----------
@@ -288,7 +464,10 @@ def dashboard_kpi(
     所有指标均基于 date_from~date_to 当前区间，并应用相同的 省/市/品种/门店类型 过滤：
     - boxes       盒数合计（SUM 数量）
     - yoy_boxes   去年同期盒数（区间 = 当前区间 -1 年，等长对齐）
-    - yoy_pct     同比增长率；去年同期销量为 0（无数据）时为 None，前端显示「/」
+    - yoy_pct     盒数同比增长率；去年同期销量为 0（无数据）时为 None，前端显示「/」
+    - amount      金额合计（SUM 数量 × 开票价），未配置开票价映射的库为 None
+    - yoy_amount  去年同期金额
+    - yoy_amount_pct 金额同比增长率
     - rows        笔数（COUNT(*) 销售记录条数）
     - stores      去重门店数（COUNT(DISTINCT 门店编码)）
     - provinces   覆盖省份数（COUNT(DISTINCT 省份)）
@@ -319,10 +498,14 @@ def dashboard_kpi(
     ext_from_sql = _shift_date(date_from, -1) if date_from else date_from
     ext_where, ext_params = _build_where(
         fm, cfg, ext_from_sql, date_to, provinces, cities, products, store_type)
-    monthly = _monthly_boxes(db_key, cfg, fm, ext_where, ext_params)
+    monthly, monthly_amount, has_amount = _monthly_boxes_amounts(
+        db_key, cfg, fm, ext_where, ext_params)
 
     # 盒数：用月级别比较，避免日级字符串与月级 key 字典序错位（修复起始月丢失）
     current_boxes = sum(v for k, v in monthly.items() if (df or "0000") <= k <= dt)
+
+    # 金额：与盒数同窗口
+    current_amount = sum(v for k, v in monthly_amount.items() if (df or "0000") <= k <= dt)
 
     # 同比：严格按「用户当前拉取的区间」整体前移一年比较，不做任何按数据范围的裁剪。
     # 去年同期缺失的月份按 0 计（新品 / 新区域本就没有去年数据，属正常业务含义）；
@@ -331,9 +514,13 @@ def dashboard_kpi(
         prev_from, prev_to = yoy
         previous_boxes = sum(v for k, v in monthly.items() if prev_from <= k <= prev_to)
         yoy_pct = round((current_boxes - previous_boxes) / previous_boxes * 100, 2) if previous_boxes else None
+        previous_amount = sum(v for k, v in monthly_amount.items() if prev_from <= k <= prev_to)
+        yoy_amount_pct = round((current_amount - previous_amount) / previous_amount * 100, 2) if previous_amount else None
     else:
         previous_boxes = None
         yoy_pct = None
+        previous_amount = None
+        yoy_amount_pct = None
 
     # 区间聚合（笔数/门店/省/市）—— 与 current_boxes 同口径（当前区间 + 相同过滤）
     #
@@ -378,6 +565,9 @@ def dashboard_kpi(
         "boxes": current_boxes,
         "yoy_boxes": previous_boxes,
         "yoy_pct": yoy_pct,
+        "amount": current_amount if has_amount else None,
+        "yoy_amount": previous_amount if has_amount else None,
+        "yoy_amount_pct": yoy_amount_pct if has_amount else None,
         "rows": agg.get("rows_n"),
         "stores": agg.get("stores"),
         "provinces": agg.get("provinces"),
@@ -424,21 +614,37 @@ def dashboard_trend(
     ext_where, ext_params = _build_where(
         fm, cfg, ext_from_sql, date_to, provinces, cities, products, store_type)
     monthly = _monthly_boxes(db_key, cfg, fm, ext_where, ext_params)
+    # 金额口径（数量 × 开票价）：与盒数一并算出，前端按「指标」切换时无需重新请求。
+    amounts = _monthly_amounts(db_key, cfg, fm, ext_where, ext_params)
 
     months = sorted(k for k in monthly if (df or "0000") <= k <= dt)
-    series_cur = [monthly[m] for m in months]
+
     # 去年同月缺失按 0 计：新品 / 新区域没有去年数据是正常的，补 0 才能反映真实对比
     # （基期为 0 的月份 growth 为 None，前端不画点 / 显示「/」）。
-    series_prev = [monthly.get(_shift_date(m, -1), 0.0) for m in months]
-    growth = [
-        round((cur - prev) / prev * 100, 2) if prev else None
-        for cur, prev in zip(series_cur, series_prev)
-    ]
+    def _build_series(mdict):
+        cur = [mdict.get(m, 0.0) for m in months]
+        prev = [mdict.get(_shift_date(m, -1), 0.0) for m in months]
+        growth = [
+            round((c - p) / p * 100, 2) if p else None
+            for c, p in zip(cur, prev)
+        ]
+        return cur, prev, growth
+
+    cur_b, prev_b, gr_b = _build_series(monthly)
+    if amounts:
+        cur_a, prev_a, gr_a = _build_series(amounts)
+    else:
+        # 无开票价映射：金额口径整体不可用，金额序列置空，避免前端切到金额时画出「0」误导。
+        cur_a = prev_a = [None] * len(months)
+        gr_a = [None] * len(months)
     result = {
         "months": months,
-        "current": series_cur,
-        "previous": series_prev,
-        "growth": growth,
+        "current": cur_b,
+        "previous": prev_b,
+        "growth": gr_b,
+        "current_amount": cur_a,
+        "previous_amount": prev_a,
+        "growth_amount": gr_a,
     }
     _dash_cache_set(key, result)
     return result
@@ -449,7 +655,7 @@ def dashboard_trend(
 def dashboard_breakdown(
     db_key: str = validate_db_key,
     dim: str = Query("province", description="province | city | product"),
-    top_n: int = Query(15, ge=1, le=50),
+    top_n: int = Query(15, ge=1, le=2000),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     provinces: Optional[str] = Query(None),
@@ -486,17 +692,29 @@ def dashboard_breakdown(
     t = sql.Identifier(cfg["table"])
     q = sql.Identifier(fm["qty_col"])
     s = sql.Identifier(fm["store_col"])
+    # 金额口径（数量 × 开票价），无开票价映射时返回 NULL
+    amount_sql = _amount_sql(db_key, cfg, fm)
+    if amount_sql is not None:
+        join_sql, amount_expr, extra_params = amount_sql
+        inner_amount = sql.SQL(", {} AS _a").format(amount_expr)
+        outer_amount = sql.SQL(", SUM(_a) AS amount")
+    else:
+        join_sql = sql.SQL("")
+        extra_params = []
+        inner_amount = sql.SQL("")
+        outer_amount = sql.SQL(", NULL AS amount")
     # 两级聚合：先折叠到 (维度, 门店) 粒度，再在结果上取 MIN(名称)/去重门店数。
     stmt = sql.SQL(
-        "SELECT _g, MIN(_n) AS name, SUM(_b) AS boxes, COUNT(DISTINCT _ks) AS stores FROM ("
-        "SELECT {g} AS _g, {s} AS _ks, MIN({n}) AS _n, SUM({q}) AS _b "
-        "FROM {t}{w} GROUP BY {g}, {s}"
+        "SELECT _g, MIN(_n) AS name, SUM(_b) AS boxes, COUNT(DISTINCT _ks) AS stores{oa} FROM ("
+        "SELECT {g} AS _g, {s} AS _ks, MIN({n}) AS _n, SUM({q}) AS _b{ia} "
+        "FROM {t}{join}{w} GROUP BY {g}, {s}"
         ") t GROUP BY _g ORDER BY boxes DESC LIMIT %s"
-    ).format(g=gcol, n=name_col, q=q, s=s, t=t, w=where)
+    ).format(g=gcol, n=name_col, q=q, s=s, ia=inner_amount, oa=outer_amount,
+             t=t, join=join_sql, w=where)
     try:
         with get_conn(db_key) as conn:
             with conn.cursor() as cur:
-                cur.execute(stmt, params + [top_n])
+                cur.execute(stmt, extra_params + params + [top_n])
                 cols = [d[0] for d in cur.description]
                 rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         result = {"dim": dim, "items": jsonable_rows(rows)}
@@ -505,6 +723,114 @@ def dashboard_breakdown(
     except Exception as e:
         logger.error("看板拆解 %s 失败: %s", db_key, e)
         raise HTTPException(500, f"拆解失败: {e}")
+
+
+# ---------- 品种逐月明细（销量 / 金额 / 门店数 / 同比 / 环比） ----------
+@router.get("/dashboard/product-detail")
+def dashboard_product_detail(
+    db_key: str = validate_db_key,
+    code: str = Query(..., description="商品编码"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    provinces: Optional[str] = Query(None),
+    cities: Optional[str] = Query(None),
+    store_type: str = Query("all"),
+):
+    """单个品种的逐月明细：销量(盒)、金额、门店数、同比、环比。
+
+    一次拉回「当前区间 + 去年同期 + 上一个月」的月度聚合，再在内存拆分，
+    避免为同比/环比各开一次查询。
+    """
+    key = _dash_cache_key(
+        "product_detail", db_key, code=code, date_from=date_from, date_to=date_to,
+        provinces=provinces, cities=cities, store_type=store_type,
+    )
+    cached = _dash_cache_get(key)
+    if cached is not None:
+        return cached
+    cfg = get_cfg(db_key)
+    fm = get_field_map(db_key)
+    if not fm:
+        raise HTTPException(400, f"该库不支持看板: {db_key}")
+
+    df = _to_month(date_from)
+    dt = _to_month(date_to)
+    if not (df and dt):
+        d_from, d_to = _default_range(db_key, cfg, fm)
+        df, dt = _to_month(d_from), _to_month(d_to)
+    empty = {
+        "code": code, "name": None, "months": [], "boxes": [], "amount": [],
+        "stores": [], "yoy_pct": [], "mom_pct": [],
+        "total_boxes": 0, "total_amount": 0, "total_stores": 0,
+    }
+    if not (df and dt):
+        _dash_cache_set(key, empty)
+        return empty
+
+    months = _month_list(df, dt)
+    # 扩展窗：往前推一年，覆盖同比；环比（上月）自然落在窗口内
+    ext_from = f"{_shift_date(df, -1)}-01"
+    ext_to = f"{dt}-01"
+    ext_where, ext_params = _build_where(
+        fm, cfg, ext_from, ext_to, provinces, cities, code, store_type)
+    boxes = _monthly_boxes(db_key, cfg, fm, ext_where, ext_params)
+    amounts = _monthly_amounts(db_key, cfg, fm, ext_where, ext_params)
+    stores = _monthly_stores(db_key, cfg, fm, ext_where, ext_params)
+
+    # 品种名称（区间内取 MIN）
+    t = sql.Identifier(cfg["table"])
+    pncol = sql.Identifier(fm.get("product_name_col", fm["product_col"]))
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT MIN({n}) FROM {t}{w}").format(n=pncol, t=t, w=ext_where),
+                ext_params,
+            )
+            name_row = cur.fetchone()
+    name = name_row[0] if name_row else None
+
+    # 当前窗口去重门店数（不能按月度相加）
+    cur_where, cur_params = _build_where(
+        fm, cfg, f"{df}-01", f"{dt}-01", provinces, cities, code, store_type)
+    s_col = sql.Identifier(fm["store_col"])
+    with get_conn(db_key) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT COUNT(DISTINCT {s}) FROM {t}{w}").format(
+                    s=s_col, t=t, w=cur_where),
+                cur_params,
+            )
+            total_stores = int(cur.fetchone()[0] or 0)
+
+    def pct(cur_v: float, base_v: float):
+        if base_v:
+            return round((cur_v - base_v) / base_v * 100, 2)
+        return None
+
+    bx, am, st, yoy, mom = [], [], [], [], []
+    for m in months:
+        v = boxes.get(m, 0.0)
+        bx.append(v)
+        am.append(amounts.get(m, 0.0))
+        st.append(stores.get(m, 0))
+        yoy.append(pct(v, boxes.get(_shift_date(m, -1), 0.0)))
+        mom.append(pct(v, boxes.get(_prev_month(m), 0.0)))
+
+    result = {
+        "code": code,
+        "name": name,
+        "months": months,
+        "boxes": bx,
+        "amount": am,
+        "stores": st,
+        "yoy_pct": yoy,
+        "mom_pct": mom,
+        "total_boxes": round(sum(bx), 2),
+        "total_amount": round(sum(am), 2),
+        "total_stores": total_stores,
+    }
+    _dash_cache_set(key, result)
+    return result
 
 
 # ---------- 维度拆解（三维度单 SQL 聚合） ----------
@@ -552,6 +878,12 @@ def dashboard_breakdown_all(
     # 两级聚合：先把事实表折叠到 (省,市,商品编码,门店) 粒度（并行 HashAggregate，
     # 8M 行 -> 约 30 万组），再在结果上做 GROUPING SETS + COUNT(DISTINCT 门店)。
     # 直接在千万级表上做「排序去重」实测 81.7s，改写后约 4.2s，各维度口径完全一致。
+    amount_sql = _amount_sql(db_key, cfg, fm)
+    if amount_sql is not None:
+        join_sql, amount_expr, extra_params = amount_sql
+    else:
+        join_sql = sql.SQL("")
+        extra_params = []
     base_sel: List[sql.Composable] = []
     base_grp: List[sql.Composable] = []
     set_cols: List[sql.Composable] = []
@@ -567,6 +899,7 @@ def dashboard_breakdown_all(
         base_sel.append(sql.SQL("{} AS _kc").format(ccol))
         base_grp.append(ccol)
         set_cols.append(sql.SQL("(_kc)"))
+        # 城市分组集也保留 province_v（MIN 聚合），供前端「拆分城市维度」时知道属哪个省
         select_parts.append(sql.SQL("GROUPING(_kc) AS g_c, MIN(_kc) AS city_v"))
     else:
         select_parts.append(sql.SQL("NULL AS g_c, NULL AS city_v"))
@@ -578,42 +911,47 @@ def dashboard_breakdown_all(
     base_sel.append(sql.SQL("{} AS _ks").format(s))
     base_grp.append(s)
     base_sel.append(sql.SQL("SUM({}) AS _b").format(q))
+    if amount_sql is not None:
+        base_sel.append(sql.SQL("{} AS _a").format(amount_expr))
     set_cols.append(sql.SQL("(_kpc)"))
     select_parts.append(sql.SQL(
         "GROUPING(_kpc) AS g_pc, MIN(_kpc) AS product_code_v, MIN(_kpn) AS product_name_v"))
 
     stmt = sql.SQL(
         "WITH base AS ("
-        "SELECT {bsel} FROM {t}{w} GROUP BY {bgrp}"
+        "SELECT {bsel} FROM {t}{join}{w} GROUP BY {bgrp}"
         ") SELECT {parts}, SUM(_b) AS boxes, COUNT(DISTINCT _ks) AS stores "
-        "FROM base GROUP BY GROUPING SETS ({gs})"
+        "{amount_sel} FROM base GROUP BY GROUPING SETS ({gs})"
     ).format(
         bsel=sql.SQL(", ").join(base_sel),
-        t=t, w=where, bgrp=sql.SQL(", ").join(base_grp),
+        t=t, join=join_sql, w=where, bgrp=sql.SQL(", ").join(base_grp),
         parts=sql.SQL(", ").join(select_parts),
+        amount_sel=sql.SQL(", SUM(_a) AS amount") if amount_sql is not None else sql.SQL(", NULL AS amount"),
         gs=sql.SQL(", ").join(set_cols),
     )
     with get_conn(db_key) as conn:
         with conn.cursor() as cur:
-            cur.execute(stmt, params)
+            cur.execute(stmt, extra_params + params)
             cols = [d[0] for d in cur.description]
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
     prov, city, prod = [], [], []
     for r in rows:
         boxes = float(r["boxes"]) if r["boxes"] is not None else 0.0
+        amount = float(r["amount"]) if r["amount"] is not None else 0.0
         stores_n = int(r["stores"]) if r["stores"] is not None else 0
         avg = round(boxes / stores_n, 2) if stores_n else 0.0
         if r["g_p"] == 0:  # province 分组集
             v = r["province_v"]
-            prov.append({"key": v, "name": v, "boxes": boxes, "avg_store": avg, "stores": stores_n})
+            prov.append({"key": v, "name": v, "boxes": boxes, "amount": amount, "avg_store": avg, "stores": stores_n})
         elif r["g_c"] == 0:  # city 分组集
             v = r["city_v"]
-            city.append({"key": v, "name": v, "boxes": boxes, "avg_store": avg, "stores": stores_n})
+            province_v = r["province_v"]
+            city.append({"key": v, "name": v, "province": province_v, "boxes": boxes, "amount": amount, "avg_store": avg, "stores": stores_n})
         elif r["g_pc"] == 0:  # product 分组集
             code = r["product_code_v"]
             name = r["product_name_v"]
-            prod.append({"key": code, "name": f"{name} ({code})", "boxes": boxes, "avg_store": avg, "stores": stores_n})
+            prod.append({"key": code, "name": f"{name} ({code})", "boxes": boxes, "amount": amount, "avg_store": avg, "stores": stores_n})
 
     prov.sort(key=lambda x: x["boxes"], reverse=True)
     city.sort(key=lambda x: x["boxes"], reverse=True)
@@ -665,15 +1003,23 @@ def dashboard_stores(
     # 一次门店粒度聚合，同时派生「连锁/加盟拆分」与「Top 门店排名」：
     # 两者原本各自做一次全表扫描，这里合并为 1 次（约 2 万行），再在应用层汇总，
     # 省掉一次千万级全表扫描（实测门店板块 5.4s -> 2.7s）。
+    amount_sql = _amount_sql(db_key, cfg, fm)
+    if amount_sql is not None:
+        join_sql, amount_expr, extra_params = amount_sql
+        amount_sel = sql.SQL(", {} AS amount").format(amount_expr)
+    else:
+        join_sql = sql.SQL("")
+        extra_params = []
+        amount_sel = sql.SQL(", NULL AS amount")
     st_sel = (sql.SQL("({}) AS store_type").format(st_expr) if st_expr is not None
               else sql.SQL("'全部' AS store_type"))
     store_stmt = sql.SQL(
-        "SELECT {s} AS store_code, {st}, MIN({sn}) AS store_name, SUM({q}) AS boxes "
-        "FROM {t}{w} GROUP BY 1, 2"
-    ).format(s=s, st=st_sel, sn=sn, q=q, t=t, w=where)
+        "SELECT {s} AS store_code, {st}, MIN({sn}) AS store_name, SUM({q}) AS boxes {amt} "
+        "FROM {t}{join}{w} GROUP BY 1, 2"
+    ).format(s=s, st=st_sel, sn=sn, q=q, amt=amount_sel, t=t, join=join_sql, w=where)
     with get_conn(db_key) as conn:
         with conn.cursor() as cur:
-            cur.execute(store_stmt, params)
+            cur.execute(store_stmt, extra_params + params)
             cols = [d[0] for d in cur.description]
             store_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -681,8 +1027,9 @@ def dashboard_stores(
     split_map: dict = {}
     for r in store_rows:
         stv = r["store_type"]
-        agg = split_map.setdefault(stv, {"st": stv, "boxes": 0, "stores": 0})
+        agg = split_map.setdefault(stv, {"st": stv, "boxes": 0, "amount": 0, "stores": 0})
         agg["boxes"] += r["boxes"] or 0
+        agg["amount"] += float(r["amount"]) if r["amount"] is not None else 0
         agg["stores"] += 1
     result["store_type_split"] = sorted(
         split_map.values(), key=lambda x: x["boxes"], reverse=True)
@@ -716,20 +1063,33 @@ def dashboard_summary(
     cities: Optional[str] = Query(None),
     products: Optional[str] = Query(None),
     store_type: str = Query("all", description="all | chain | franchise"),
-    province_top_n: int = Query(15, ge=1, le=50),
-    city_top_n: int = Query(15, ge=1, le=50),
-    product_top_n: int = Query(20, ge=1, le=50),
+    province_top_n: int = Query(100, ge=1, le=2000),
+    city_top_n: int = Query(500, ge=1, le=2000),
+    product_top_n: int = Query(500, ge=1, le=2000),
     store_top_n: int = Query(20, ge=1, le=100),
+    include_stores: bool = Query(True, description="是否计算门店板块（首屏可先跳过，异步补齐）"),
 ):
     """一次性返回看板全部数据：KPI + 趋势(同比) + 省/市/品种拆解 + 门店板块。
 
     复用各子查询函数（含其 TTL 缓存与已验证的计算口径），并用线程池并发执行，
     在把前端 HTTP 往返从 6 次降到 1 次的同时，保持「最慢子查询」级别的延迟。
     """
+    cfg = get_cfg(db_key)
+    fm = get_field_map(db_key)
+    if not fm:
+        raise HTTPException(400, f"该库不支持看板: {db_key}")
+    # 首屏未传日期时直接落到「今年 1 月 ~ 最新月」，避免前端二次全量重查
+    applied_range = None
+    if not (date_from and date_to):
+        d_from, d_to = _default_range(db_key, cfg, fm)
+        if d_from and d_to:
+            date_from, date_to = d_from, d_to
+            applied_range = {"date_from": d_from, "date_to": d_to}
     key = _dash_cache_key(
         "summary", db_key, date_from=date_from, date_to=date_to,
         provinces=provinces, cities=cities, products=products, store_type=store_type,
         ptn=province_top_n, ctn=city_top_n, prtn=product_top_n, stn=store_top_n,
+        inc_stores=include_stores,
     )
     cached = _dash_cache_get(key)
     if cached is not None:
@@ -738,23 +1098,37 @@ def dashboard_summary(
     # 复用已验证的子查询函数（每个在独立线程内各自开连接，安全）。
     # breakdown 三维度合并为 1 条 GROUPING SETS SQL（dashboard_breakdown_all），减少全表扫描次数；
     # options 也一并聚合，首屏 HTTP 往返降到 1 次。
+    # 门店板块最重（单表门店粒度聚合），首屏可用 include_stores=false 跳过、随后单独补齐，
+    # 避免它与其它查询争抢数据库资源拖慢首屏。
     tasks = {
-        "options": lambda: dashboard_options(db_key),
         "kpi": lambda: dashboard_kpi(db_key, date_from, date_to, provinces, cities, products, store_type),
         "trend": lambda: dashboard_trend(db_key, date_from, date_to, provinces, cities, products, store_type),
         "breakdown": lambda: dashboard_breakdown_all(
             db_key, province_top_n, city_top_n, product_top_n,
             date_from, date_to, provinces, cities, products, store_type),
-        "stores": lambda: dashboard_stores(db_key, store_top_n, date_from, date_to, provinces, cities, products, store_type),
     }
+    if include_stores:
+        tasks["stores"] = lambda: dashboard_stores(
+            db_key, store_top_n, date_from, date_to, provinces, cities, products, store_type)
     results: dict = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
         futures = {name: ex.submit(fn) for name, fn in tasks.items()}
         for name, fut in futures.items():
             results[name] = fut.result()
 
+    # 选项：优先命中缓存；无筛选时直接用 breakdown 结果拼（省掉 3 次 DISTINCT 扫描），
+    # 有筛选且未命中缓存时退回 dashboard_options（极少发生，选项通常在首屏已缓存）。
+    opt_key = _dash_cache_key("options", db_key)
+    options = _dash_cache_get(opt_key)
+    if options is None:
+        if not (provinces or cities or products):
+            options = _options_from_breakdown(db_key, cfg, fm, results["breakdown"])
+            _dash_cache_set(opt_key, options)
+        else:
+            options = dashboard_options(db_key)
+
     result = {
-        "options": results["options"],
+        "options": options,
         "kpi": results["kpi"],
         "trend": results["trend"],
         "breakdown": {
@@ -762,7 +1136,8 @@ def dashboard_summary(
             "city": results["breakdown"]["city"],
             "product": results["breakdown"]["product"],
         },
-        "stores": results["stores"],
+        "stores": results.get("stores"),
+        "applied_range": applied_range,
     }
     _dash_cache_set(key, result)
     return result

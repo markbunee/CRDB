@@ -3,33 +3,46 @@
     v-model="drawerVisible"
     title="统计分析"
     direction="rtl"
-    size="86%"
+    :size="isMobile ? '100%' : '86%'"
     :with-header="true"
     class="stats-drawer"
+    @closed="showMenu = true"
   >
-    <div class="stats-layout">
-      <!-- 左侧功能菜单 -->
-      <aside class="stats-sidebar">
-        <div class="sidebar-title">功能菜单</div>
+    <div class="stats-layout" :class="{ 'is-mobile': isMobile }">
+      <!-- 左侧功能菜单（手机端作为独立菜单页整屏展示） -->
+      <aside class="stats-sidebar" v-show="!isMobile || showMenu">
+        <div class="sidebar-title">
+          {{ isMobile ? '选择统计维度' : '功能菜单' }}
+          <span v-if="isMobile" class="sidebar-count">共 {{ menuItems.length }} 项</span>
+        </div>
         <ul class="menu-list">
           <li
             v-for="item in menuItems"
             :key="item.key"
             class="menu-item"
             :class="{ active: activeFunc === item.key }"
-            @click="activeFunc = item.key"
+            @click="selectFunc(item.key)"
           >
             <el-icon class="menu-icon"><component :is="item.icon" /></el-icon>
             <div class="menu-text">
               <div class="menu-name">{{ item.name }}</div>
               <div class="menu-desc">{{ item.desc }}</div>
             </div>
+            <el-icon v-if="isMobile" class="menu-arrow"><ArrowRight /></el-icon>
           </li>
         </ul>
       </aside>
 
       <!-- 右侧内容区 -->
-      <section class="stats-content">
+      <section class="stats-content" v-show="!isMobile || !showMenu">
+        <!-- 手机端：返回菜单 + 当前功能名 -->
+        <div v-if="isMobile" class="mobile-bar">
+          <button class="mobile-back" type="button" @click="showMenu = true">
+            <el-icon><ArrowLeft /></el-icon>
+            <span>{{ currentItem?.name }}</span>
+          </button>
+        </div>
+
         <StoreCityStats
           v-if="activeFunc === 'store_city'"
           :db-key="dbKey"
@@ -44,10 +57,6 @@
         />
         <StoreAbilityStats
           v-else-if="activeFunc === 'store_ability'"
-          :db-key="dbKey"
-        />
-        <AiAgentPanel
-          v-else-if="activeFunc === 'ai_agent'"
           :db-key="dbKey"
         />
         <BoxCountStats
@@ -69,13 +78,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { Shop, TrendCharts, Trophy, MagicStick, Money, Notebook, DataAnalysis } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import {
+  Shop,
+  Box,
+  TrendCharts,
+  Trophy,
+  Money,
+  Notebook,
+  DataAnalysis,
+  ArrowRight,
+  ArrowLeft,
+} from '@element-plus/icons-vue'
 import StoreCityStats from './stats/StoreCityStats.vue'
 import BoxCountStats from './stats/BoxCountStats.vue'
 import SalesTrendStats from './stats/SalesTrendStats.vue'
 import StoreAbilityStats from './stats/StoreAbilityStats.vue'
-import AiAgentPanel from './stats/AiAgentPanel.vue'
 import ProductMapPanel from './stats/ProductMapPanel.vue'
 import TurnoverInventory from './stats/TurnoverInventory.vue'
 import { getDbConfig } from '@/utils/dbConfig'
@@ -151,12 +169,6 @@ const menuItems = computed(() => {
       icon: DataAnalysis,
     })
   }
-  items.push({
-    key: 'ai_agent',
-    name: 'AI 代理',
-    desc: '智能问数 · 内测预览',
-    icon: MagicStick,
-  })
   if (abilityEnabled.value) {
     items.push({
       key: 'store_ability',
@@ -170,7 +182,35 @@ const menuItems = computed(() => {
 
 const activeFunc = ref('store_city')
 
-onMounted(loadAbilityFlag)
+/** 手机端：先展示功能菜单，点选后再进入对应统计内容 */
+const showMenu = ref(true)
+const currentItem = computed(() => menuItems.value.find((i) => i.key === activeFunc.value))
+
+/** 与 main.css 保持一致的移动端断点 */
+const MOBILE_QUERY = '(max-width: 768px)'
+const isMobile = ref(false)
+let mq: MediaQueryList | null = null
+
+function syncMobile() {
+  isMobile.value = !!mq?.matches
+}
+
+function selectFunc(key: string) {
+  activeFunc.value = key
+  if (isMobile.value) showMenu.value = false
+}
+
+onMounted(() => {
+  mq = window.matchMedia(MOBILE_QUERY)
+  mq.addEventListener('change', syncMobile)
+  syncMobile()
+  loadAbilityFlag()
+})
+
+onUnmounted(() => {
+  mq?.removeEventListener('change', syncMobile)
+  mq = null
+})
 
 // 切换库后重新判断开关；若当前停留在新库不支持的功能上则回落到第一项
 watch(
@@ -270,18 +310,135 @@ watch(
 }
 
 .menu-desc {
-  font-size: 11px;
+  display: none;
+}
+
+.menu-arrow {
+  margin-left: auto;
+  align-self: center;
+  font-size: 16px;
   color: #c0c4cc;
-  line-height: 1.3;
+  flex-shrink: 0;
 }
 
 /* ---------- 右侧内容区（宽） ---------- */
 .stats-content {
   flex: 1;
   min-width: 0;
-  padding: 20px;
-  overflow: hidden;
+  padding: 20px 20px 24px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
+}
+
+/* 手机端返回条 */
+.mobile-bar {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.mobile-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 8px 14px 8px 10px;
+  background: #f1f6ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 999px;
+  color: #1a4fc0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.mobile-back span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   手机端（≤768px）：侧栏改为整屏菜单页，点选后进入内容
+   ============================================================ */
+@media (max-width: 768px) {
+  .stats-layout {
+    display: block;
+    height: 100%;
+  }
+
+  .stats-sidebar {
+    width: 100%;
+    height: 100%;
+    background: #fff;
+    border-right: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 2px 12px;
+    font-size: 12px;
+    color: #909399;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .sidebar-count {
+    font-size: 11px;
+    color: #909399;
+    font-weight: 400;
+  }
+
+  .menu-list {
+    padding: 0;
+    gap: 10px;
+  }
+
+  .menu-item {
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    background: #fff;
+    border: 1px solid #ebeef5;
+    border-radius: 12px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  }
+
+  .menu-item:active {
+    background: #f5f7fa;
+  }
+
+  .menu-item.active {
+    background: #f1f6ff;
+    border-color: #3b6bd6;
+  }
+
+  .menu-icon {
+    font-size: 22px;
+    margin-top: 0;
+    flex-shrink: 0;
+  }
+
+  .menu-name {
+    font-size: 14px;
+  }
+
+  .menu-desc {
+    font-size: 11px;
+    color: #909399;
+  }
+
+  .stats-content {
+    height: 100%;
+    padding: 4px 0 calc(20px + env(safe-area-inset-bottom, 0px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 </style>

@@ -17,7 +17,6 @@
 映射每次请求现读（文件只有几 KB），管理弹窗保存后立即生效，不受候选缓存影响。
 """
 import os
-import time
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Query
@@ -33,6 +32,7 @@ from ..models.schema_def import (
 )
 from ..database import get_conn
 from ..services.product_map import get_product_map
+from ..services.ttl_cache import TTLCache
 from ..logger import get_logger
 
 router = APIRouter(prefix="/api/{db_key}", tags=["filter_options"])
@@ -47,14 +47,17 @@ FIELD_COL = {
     "store": "store_name_col",   # 门店名称
 }
 
-# ---------- 候选值缓存（TTL） ----------
-_OPT_CACHE: dict = {}
-_OPT_CACHE_TTL = int(os.environ.get("FILTER_OPTIONS_CACHE_TTL", "600"))
+# ---------- 候选值缓存（TTL + 容量上限） ----------
+_OPT_CACHE = TTLCache(
+    ttl=int(os.environ.get("FILTER_OPTIONS_CACHE_TTL", "600")),
+    max_entries=int(os.environ.get("FILTER_OPTIONS_CACHE_MAX_ENTRIES", "16")),
+    name="filter_options",
+)
 _MAX_DISTINCT = int(os.environ.get("FILTER_OPTIONS_MAX", "50000"))
 
 
 def invalidate_filter_options_cache(_db_key: str | None = None):
-    """数据写入（导入 / 清空）后调用，清空候选值缓存。
+    """数据写入（导入 / 清空 / 库存导入）后调用，清空候选值缓存。
 
     _db_key 保留以便将来按需按库失效；现在候选值数据量小，直接整体清空。
     """
@@ -62,16 +65,11 @@ def invalidate_filter_options_cache(_db_key: str | None = None):
 
 
 def _cache_get(key: str):
-    item = _OPT_CACHE.get(key)
-    if item and (time.time() - item[0]) < _OPT_CACHE_TTL:
-        return item[1]
-    if item:
-        _OPT_CACHE.pop(key, None)
-    return None
+    return _OPT_CACHE.get(key)
 
 
 def _cache_set(key: str, value):
-    _OPT_CACHE[key] = (time.time(), value)
+    _OPT_CACHE.set(key, value)
 
 
 def _load_distinct_inventory(db_key: str, field: str) -> List[dict]:
@@ -177,6 +175,36 @@ def _load_distinct(db_key: str, field: str, source: str = "sales") -> List[dict]
             continue
         items.append({"value": s, "label": s, "kw": s.lower()})
     items.sort(key=lambda x: x["value"])
+    return items
+
+
+def get_candidates(db_key: str, field: str, source: str = "sales") -> List[dict]:
+    """对外暴露「去重候选全集」[{value,label,kw}] —— AI 槽位消歧复用。
+
+    为什么单独开这个口子
+    --------------------
+    AI 要把用户原话里的「广东省」「维生素D」归一化为库里的真实值，
+    若自己再去 DISTINCT 扫一遍千万级事实表，等于把已经优化过的冷路径又走一遍。
+    这里与下拉候选共用同一份 TTL 缓存：冷启动扫一次，之后全内存匹配（毫秒级）。
+
+    只支持 source="sales"：AI 目前只回答销售域问题，库存候选不涉及。
+    """
+    if field not in FIELD_COL:
+        return []
+    if source != "sales":
+        return []
+    fm = get_field_map(db_key)
+    if FIELD_COL[field] not in fm:
+        return []  # 该库没有这一维度（如海王无省份）
+    ck = f"{db_key}|{field}"
+    items = _cache_get(ck)
+    if items is None:
+        try:
+            items = _load_distinct(db_key, field, source)
+        except Exception as e:
+            logger.error("AI 加载候选值失败 %s/%s: %s", db_key, field, e)
+            return []
+        _cache_set(ck, items)
     return items
 
 

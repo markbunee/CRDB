@@ -204,12 +204,17 @@ def rows_to_csv_text(
     return buf.flush()
 
 
-def tables_to_csv_text(tables: List[dict], calc_yoy_mom: bool = False) -> str:
+def tables_to_csv_text(
+    tables: List[dict], calc_yoy_mom: bool = False, additive: bool = True
+) -> str:
     """把多张透视表拼成**一个 CSV**（原来是一个 xlsx 多 sheet）。
 
     多 sheet 的信息用首列「分组」保留：每行带上所属子表标题，
     这样导出的 CSV 既能直接看，也能被 pandas/Excel 直接透视分析。
     各子表的列取并集（省份展开等场景列集合可能不同），缺失填 0。
+
+    ``additive``：指标是否可加（盒数/金额 True，门店数去重计数 False）。
+    不可加时不输出「合计」列与表尾合计行 —— 去重计数求和会偏大且无业务含义。
     """
     col_keys: List[str] = []
     seen = set()
@@ -219,28 +224,44 @@ def tables_to_csv_text(tables: List[dict], calc_yoy_mom: bool = False) -> str:
                 seen.add(k)
                 col_keys.append(k)
 
-    extra = ["合计", "同期合计", "同比(%)", "上月合计", "环比(%)"] if calc_yoy_mom else []
+    # 「合计」列（行合计）仅在指标可加时输出；同比环比模式再追加同期/上月相关列
+    extra: List[str] = []
+    if additive:
+        extra.append("合计")
+        if calc_yoy_mom:
+            extra += ["同期合计", "同比(%)", "上月合计", "环比(%)"]
     row_header = (tables[0].get("row_header", "") if tables else "") or "分组"
     header = ["分组", row_header] + col_keys + extra
+
+    def _line(title: str, row: dict) -> List:
+        cells = row.get("cells", {}) or {}
+        line: List = [title, row.get("row_key", "")]
+        for k in col_keys:
+            v = cells.get(k, 0)
+            line.append(0 if v is None else v)
+        if not additive:
+            return line
+        line.append(row.get("total", 0))
+        if calc_yoy_mom:
+            line.append(row.get("yoy_total", 0))
+            yoy = row.get("yoy_pct")
+            line.append(yoy if yoy is not None else "/")
+            line.append(row.get("mom_total", 0))
+            mom = row.get("mom_pct")
+            line.append(mom if mom is not None else "/")
+        return line
 
     def _iter():
         for t in tables:
             title = t.get("title") or ""
             for row in t.get("rows", []):
-                cells = row.get("cells", {}) or {}
-                line: List = [title, row.get("row_key", "")]
-                for k in col_keys:
-                    v = cells.get(k, 0)
-                    line.append(0 if v is None else v)
-                if calc_yoy_mom:
-                    line.append(row.get("total", 0))
-                    line.append(row.get("yoy_total", 0))
-                    yoy = row.get("yoy_pct")
-                    line.append(yoy if yoy is not None else "/")
-                    line.append(row.get("mom_total", 0))
-                    mom = row.get("mom_pct")
-                    line.append(mom if mom is not None else "/")
-                yield line
+                yield _line(title, row)
+            # 表尾「合计」行 = 列合计（该表各列纵向求和），与界面上的合计行一致；不可加时省略
+            if not additive:
+                continue
+            footer = t.get("footer")
+            if isinstance(footer, dict):
+                yield _line(title, footer)
 
     if not tables:
         return rows_to_csv_text(["无数据"], [])

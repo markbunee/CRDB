@@ -260,13 +260,13 @@ defineExpose({ refresh: applyDefaults })
 .turnover-stats {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  height: 100%;
+  gap: 12px;
+  min-height: 100%;
 }
 .filter-section {
   border: 1px solid #ebeef5;
   border-radius: 8px;
-  padding: 14px 16px;
+  padding: 14px 18px;
   background: #fafbfc;
 }
 .filter-grid {

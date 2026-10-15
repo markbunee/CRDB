@@ -9,3 +9,4 @@ pydantic==2.9.2
 # 登录鉴权：密码哈希（bcrypt）+ JWT
 bcrypt==5.0.0
 PyJWT==2.10.1
+python-multipart==0.0.20

@@ -21,6 +21,12 @@ PG_ADMIN_DB = os.environ.get("PG_ADMIN_DB", "postgres")
 POOL_MIN = int(os.environ.get("PG_POOL_MIN", "2"))
 POOL_MAX = int(os.environ.get("PG_POOL_MAX", "10"))
 
+# ---------- 只读查询语句超时（毫秒） ----------
+# 在只读连接上 SET statement_timeout，让跑飞的 SQL 由 PostgreSQL 主动杀掉，
+# 避免单条慢查询长时间占满连接/CPU 把小内存服务器拖垮。
+# 0 表示不设置（沿用数据库默认，一般也建议设一个上限）。
+QUERY_STATEMENT_TIMEOUT_MS = max(0, int(os.environ.get("QUERY_STATEMENT_TIMEOUT_MS", "30000")))
+
 # ---------- 数据库 Key -> 实际数据库名 ----------
 DB_NAMES = {
     "dashenlin": "dashenlin",

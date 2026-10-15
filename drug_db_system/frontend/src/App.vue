@@ -1,5 +1,6 @@
 <template>
   <div class="app">
+    <WatermarkOverlay :text="wmText" />
     <header class="app-header">
       <div class="header-content">
         <div class="header-left">
@@ -7,6 +8,7 @@
           <p class="subtitle">大参林 · 高济 · 海王 — 三库数据查询与维护</p>
         </div>
         <div v-if="isLoggedIn()" class="header-right">
+          <el-button size="small" plain @click="goHome">主界面</el-button>
           <span class="user-chip">
             {{ user?.display_name || user?.username }}
             <el-tag size="small" :type="isAdmin() ? 'danger' : 'info'" effect="dark">
@@ -24,14 +26,33 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearSession, currentUser, isAdmin, isLoggedIn } from '@/utils/auth'
 import { logout } from '@/api/auth'
+import WatermarkOverlay from '@/components/WatermarkOverlay.vue'
+import { ensurePolling } from '@/composables/downloadQueue'
 
 const router = useRouter()
 const user = computed(() => currentUser())
+
+// 应用启动即同步一次「下载中心」任务状态（跨页面也能收到导出完成通知）。
+// 轮询在无进行中任务时会自动停止，不会空转刷接口。
+onMounted(() => {
+  ensurePolling()
+})
+
+function goHome() {
+  router.push('/home')
+}
+
+// 水印文案：显示名（无则账号）；未登录不显示
+const wmText = computed(() => {
+  if (!isLoggedIn()) return ''
+  const u = user.value
+  return u?.display_name || u?.username || ''
+})
 
 async function onLogout() {
   try {

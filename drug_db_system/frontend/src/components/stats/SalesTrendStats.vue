@@ -3,7 +3,7 @@
     <!-- 维度切换 -->
     <div class="dimension-tabs">
       <div
-        v-for="d in dimensions"
+        v-for="d in dimensionTabs"
         :key="d.key"
         class="dim-tab"
         :class="{ active: dimension === d.key }"
@@ -33,7 +33,7 @@
               size="default"
               style="width: 280px"
             />
-            <el-checkbox v-model="mergeMonths" class="merge-checkbox" @change="onMergeChange">
+            <el-checkbox v-model="mergeMonths" class="merge-checkbox" :disabled="dimension === 'province'" @change="onMergeChange">
               合并为单表
             </el-checkbox>
           </div>
@@ -70,7 +70,7 @@
             <el-checkbox v-model="mergeCities" class="merge-checkbox" @change="onMergeChange">
               合并{{ regionLabel }}
             </el-checkbox>
-            <el-checkbox v-if="regionLevel === 'province' && hasProvince" v-model="mergeProvinceCities" class="merge-checkbox" @change="onMergeChange">
+            <el-checkbox v-if="dimension === 'province'" v-model="mergeProvinceCities" class="merge-checkbox" @change="onMergeChange">
               合并省份内的城市
             </el-checkbox>
           </div>
@@ -179,6 +179,7 @@ import {
   TrendCharts,
   DataLine,
   Location,
+  MapLocation,
   Goods,
   Calendar,
 } from '@element-plus/icons-vue'
@@ -194,6 +195,7 @@ import { getCurrentMonthRange } from '@/utils/date'
 import { fetchStatsLatestRange } from '@/api/client'
 import { logger } from '@/utils/logger'
 import { getDbConfig } from '@/utils/dbConfig'
+import { onWindowResize } from '@/utils/resize'
 import { loadMapPref, saveMapPref } from '@/utils/mapPref'
 import ProductMapManager from './ProductMapManager.vue'
 import KeywordSelect from '../KeywordSelect.vue'
@@ -214,6 +216,16 @@ const dimensions = [
   { key: 'time' as StoreCountDimension, name: '时间维度', desc: '柱状图 · 月度销售对比', icon: Calendar },
 ]
 
+/**
+ * 「省份维度」= 原省份模式那套 省 → 市 展开布局，已单拎为独立维度；
+ * 只有支持省份的库（如大参林）才出现该标签页。
+ */
+const dimensionTabs = computed(() =>
+  hasProvince.value
+    ? [...dimensions, { key: 'province' as StoreCountDimension, name: '省份维度', desc: '柱状图 · 省内城市×品类', icon: MapLocation }]
+    : dimensions,
+)
+
 const dimension = ref<StoreCountDimension>('city')
 const regionLevel = ref<StoreCountRegion>('city')
 const dateRange = ref<[string, string]>([defaultStart.value, defaultEnd.value])
@@ -223,6 +235,7 @@ const products = ref('')
 const mergeMonths = ref(false)
 const mergeCities = ref(false)
 const mergeProducts = ref(false)
+// 仅在「省份维度」下有意义：把行轴上的省内城市折叠成整省合计
 const mergeProvinceCities = ref(false)
 // 门店类型筛选（连锁/加盟/全部），仅支持该维度的库（如大参林）显示
 const storeType = ref<'all' | 'chain' | 'franchise'>('all')
@@ -259,17 +272,19 @@ function disposeAllCharts() {
   chartInstances.length = 0
 }
 
-onUnmounted(() => {
-  disposeAllCharts()
-  window.removeEventListener('resize', handleResize)
-})
-
 function handleResize() {
   chartInstances.forEach(c => {
     try { c.resize() } catch (_) { /* noop */ }
   })
 }
-window.addEventListener('resize', handleResize)
+
+// 统一防抖订阅：手机端滚动时地址栏收放会高频触发 resize
+const stopResize = onWindowResize(handleResize)
+
+onUnmounted(() => {
+  disposeAllCharts()
+  stopResize()
+})
 
 // ---------- 图表数据结构 ----------
 interface ChartData {
@@ -289,6 +304,7 @@ const regionLabel = computed(() =>
 
 const dbConfig = ref<DbMeta | null>(null)
 const hasProvince = computed(() => dbConfig.value?.region_levels?.includes('province') ?? true)
+const supportsStoreType = computed(() => !!dbConfig.value?.supports_store_type)
 
 onMounted(async () => {
   dbConfig.value = await getDbConfig(props.dbKey)
@@ -314,11 +330,15 @@ watch(() => props.dbKey, applyLatestRange)
 const hintText = computed(() => {
   const d = dimension.value
   const mergeHints: string[] = []
-  if (mergeMonths.value) mergeHints.push('时间')
-  if (mergeCities.value) mergeHints.push(regionLabel.value)
-  if (mergeProvinceCities.value) mergeHints.push('省内城市')
+  // 省份维度的行/列是 省内城市×品类，月份不参与布局
+  if (d !== 'province' && mergeMonths.value) mergeHints.push('时间')
+  if (mergeCities.value) mergeHints.push(d === 'province' ? '省份' : regionLabel.value)
+  if (d === 'province' && mergeProvinceCities.value) mergeHints.push('省内城市')
   if (mergeProducts.value) mergeHints.push('品类')
   const mergeStr = mergeHints.length ? `（已合并：${mergeHints.join('、')}）` : ''
+  if (d === 'province') {
+    return `省份维度：柱状图展示各省内城市分品类的销售盒数（日期区间合计）${mergeStr}`
+  }
   if (d === 'city') {
     return `城市维度：折线图展示各品类销售盒数按月变化趋势${mergeStr}`
   }
@@ -347,6 +367,24 @@ function tablesToLineCharts(tables: BoxCountTable[]): ChartData[] {
       series,
     }
   })
+}
+
+function tablesToProvinceCharts(tables: BoxCountTable[]): ChartData[] {
+  // 省份维度：每个 table 是一个省份（省份拆表），行=省内城市、列=品类
+  // → 每省一张「城市 × 品类」分组柱状图（值是日期区间内的合计，月份不参与布局）
+  return tables.map(t => ({
+    title: t.title,
+    meta: `${t.row_keys.length} ${t.row_header} × ${t.col_keys.length} ${t.col_header}`,
+    type: 'bar' as const,
+    categories: t.row_keys,
+    series: t.col_keys.map(ck => ({
+      name: ck,
+      data: t.row_keys.map(rk => {
+        const row = t.rows.find(r => r.row_key === rk)
+        return row?.cells[ck] ?? 0
+      }),
+    })),
+  }))
 }
 
 function tablesToBarCharts(tables: BoxCountTable[]): ChartData[] {
@@ -536,10 +574,13 @@ function renderCharts() {
 function switchDimension(d: StoreCountDimension) {
   if (dimension.value === d) return
   dimension.value = d
+  // 省份维度固定「省份拆表 + 省内城市行」，地域筛选按省份给 → 一并把地域级别切到省份
+  if (d === 'province') regionLevel.value = 'province'
   // 切换维度时清理不再适用的合并选项
-  if (d !== 'city') mergeCities.value = false
+  if (d !== 'city' && d !== 'province') mergeCities.value = false
   if (d !== 'product') mergeProducts.value = false
   if (d !== 'time') mergeMonths.value = false
+  if (d !== 'province') mergeProvinceCities.value = false
   tables.value = []
   chartDataList.value = []
   disposeAllCharts()
@@ -548,6 +589,8 @@ function switchDimension(d: StoreCountDimension) {
 function onRegionChange() {
   if (regionLevel.value === 'city') {
     provinces.value = ''
+    // 省份维度只在省份级别下成立：切回城市级别时回落到城市维度，避免筛选器与布局错位
+    if (dimension.value === 'province') dimension.value = 'city'
   } else {
     cities.value = ''
   }
@@ -580,7 +623,6 @@ async function handleQuery() {
       products: products.value || undefined,
       merge_cities: mergeCities.value,
       merge_products: mergeProducts.value,
-      merge_province_cities: mergeProvinceCities.value,
       map_names: mapNames.value,
       store_type: storeType.value,
     })
@@ -594,6 +636,8 @@ async function handleQuery() {
     // 转换数据
     if (dimension.value === 'time') {
       chartDataList.value = tablesToBarCharts(res.tables)
+    } else if (dimension.value === 'province') {
+      chartDataList.value = tablesToProvinceCharts(res.tables)
     } else {
       chartDataList.value = tablesToLineCharts(res.tables)
     }
@@ -629,8 +673,8 @@ function handleReset() {
 .sales-trend-stats {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  gap: 16px;
+  min-height: 100%;
+  gap: 12px;
 }
 
 /* ---------- 维度切换 ---------- */
@@ -645,7 +689,7 @@ function handleReset() {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   background: #fff;
   border: 1px solid #e4e7ed;
   border-radius: 8px;
@@ -691,16 +735,14 @@ function handleReset() {
 }
 
 .dim-desc {
-  font-size: 11px;
-  color: #909399;
-  line-height: 1.3;
+  display: none;
 }
 
 /* ---------- 筛选区 ---------- */
 .filter-section {
   background: #fff;
   border-radius: 8px;
-  padding: 18px 22px;
+  padding: 14px 18px;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
 }

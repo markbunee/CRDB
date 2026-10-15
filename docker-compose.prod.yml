@@ -1,0 +1,61 @@
+# ============================================================
+# 生产覆盖文件
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# ⚠️ 这里绝不能出现任何 ports：
+#    Compose 合并多个 -f 时，ports 是「追加」不是「覆盖」。
+#    在这里写 ports（哪怕是 ports: []）都不会取消基础文件的映射，
+#    只会造成同一端口重复绑定 → Bind for 0.0.0.0:xxxx failed: port is already allocated
+#
+# 基础文件已经处理好了：
+#   - postgres / api 不映射宿主机端口
+#   - web 只映射 ${WEB_PORT:-18080}（避开 Ticketsys / 宝塔）
+# ============================================================
+services:
+  # 内存上限：postgres 不设容器硬上限（按运维结论，1G 上限会导致大查询超时/OOM）。
+  # 由后端 MEMORY_GUARD 在系统可用内存偏低时拒绝重查询（503）兜底，避免主机 OOM。
+  # 如需恢复硬上限，取消下一行注释并设 PG_MEM_LIMIT：
+  #   mem_limit: ${PG_MEM_LIMIT:-1024m}
+  postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  api:
+    mem_limit: ${API_MEM_LIMIT:-512m}
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # AI 桥梁：只补槽位、不做查询，内存需求很小（pi agent 单步调用）。
+  ai:
+    mem_limit: ${AI_MEM_LIMIT:-256m}
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-256m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    mem_limit: ${WEB_MEM_LIMIT:-128m}
+    deploy:
+      resources:
+        limits:
+          memory: ${WEB_MEM_LIMIT:-128m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

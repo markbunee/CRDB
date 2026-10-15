@@ -15,6 +15,9 @@ html, body, #app {
 body {
   background: #f5f7fa;
   color: #303133;
+  /* 手机端禁止整页横向滚动（表格等仍走自身滚动容器） */
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
   font-family:
     Inter,
     -apple-system,
@@ -49,9 +52,11 @@ body {
     display: block !important;
   }
 
-  /* 顶部标题栏缩小 */
+  /* ---------- 顶部标题栏 ---------- */
   .app-header {
     padding: 12px 14px;
+    /* 顶部安全区（刘海屏 / 挖孔屏） */
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
   }
 
   .app-header .title {
@@ -64,7 +69,8 @@ body {
   }
 
   .app-main {
-    padding: 12px 12px 84px; /* 底部留白给固定导航栏 */
+    /* 底部留白给固定导航栏 + HOME 指示条安全区 */
+    padding: 12px 12px calc(84px + env(safe-area-inset-bottom, 0px));
   }
 
   /* 公司切换标签：横向滚动 */
@@ -107,15 +113,126 @@ body {
     line-height: 34px;
   }
 
-  /* 弹窗在小屏上不溢出 */
+  /* ---------- 抽屉：手机上铺满整屏 ---------- */
+  .el-drawer {
+    width: 100% !important;
+    max-width: 100vw !important;
+  }
+
+  /* 底部半屏抽屉：顶部圆角（Element Plus 方向类为 .btt / .ttb，非 --btt） */
+  .el-drawer.btt,
+  .el-drawer.ttb {
+    border-radius: 18px 18px 0 0;
+    overflow: hidden;
+  }
+
+  .el-drawer__header {
+    margin-bottom: 0;
+    padding: 14px 16px 12px;
+  }
+
+  .el-drawer__title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #303133;
+  }
+
+  .el-drawer__body {
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    overflow-x: hidden;
+  }
+
+  .el-drawer__close-btn {
+    padding: 0;
+  }
+
+  /* ---------- 弹窗：小屏不溢出、底部按钮加高 ---------- */
   .el-dialog {
     width: 92vw !important;
     max-width: 92vw;
+    margin-top: 6vh !important;
+    border-radius: 12px;
   }
 
-  /* 统计 / 看板抽屉在小屏占满 */
-  .el-drawer {
-    max-width: 100vw;
+  .el-dialog__body {
+    padding: 14px 16px;
+    max-height: 62vh;
+    overflow-y: auto;
+  }
+
+  .el-dialog__footer {
+    padding: 10px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .el-dialog__footer .el-button {
+    min-height: 44px;
+    flex: 1;
+  }
+
+  /* 拖拽上传区在小屏压缩高度 */
+  .el-upload-dragger {
+    padding: 18px 12px;
+  }
+
+  /* ---------- 触控尺寸：控件整体加高 ---------- */
+  .el-button {
+    min-height: 40px;
+  }
+
+  .el-button--small {
+    min-height: 32px;
+  }
+
+  .el-input__wrapper,
+  .el-textarea__inner {
+    min-height: 40px;
+  }
+
+  /* 表单 / 抽屉内的下拉与日期控件撑满一行。
+     注意不要写成全局 `.el-select`，否则分页栏的「每页 N 条」会被拉成整行。 */
+  .el-form .el-select,
+  .el-form .el-date-editor,
+  .el-drawer .el-select,
+  .el-drawer .el-date-editor {
+    width: 100% !important;
+  }
+
+  /* 内联表单在小屏纵向排列 */
+  .el-form--inline .el-form-item {
+    display: block;
+    margin-right: 0;
+  }
+
+  .el-form-item__label {
+    padding-bottom: 4px;
+    font-size: 12px;
+  }
+
+  /* ---------- 表格：手机端放大字号 + 放宽留白，避免拥挤变形 ---------- */
+  .el-table {
+    font-size: 13px;
+  }
+
+  .el-table .cell {
+    padding: 0 8px;
+  }
+
+  .el-table th.el-table__cell {
+    padding: 10px 0;
+  }
+
+  .el-table td.el-table__cell {
+    padding: 9px 0;
+  }
+
+  /* ---------- 提示类浮层不撑破屏幕 ---------- */
+  .el-message {
+    min-width: 76vw;
+    max-width: 92vw;
+  }
+
+  .el-message-box {
+    width: 88vw !important;
   }
 
   /* 看板筛选表单纵向排列 */

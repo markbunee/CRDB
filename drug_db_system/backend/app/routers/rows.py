@@ -2,6 +2,8 @@
 """数据行 CRUD 接口：/api/{db_key}/rows。"""
 from typing import Any, Dict, Optional
 
+import os
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from psycopg2 import sql
 
@@ -15,9 +17,53 @@ from ..services.query_builder import (
     query_rows, get_row_by_id, create_row, update_row, delete_row,
     delete_rows_by_date, delete_rows_by_month_range,
 )
+from ..services.ttl_cache import TTLCache
 
 router = APIRouter(prefix="/api/{db_key}", tags=["rows"])
 logger = get_logger("app.routers.rows")
+
+
+# ---------- 列表查询缓存（短 TTL + 容量上限） ----------
+# 实销查看主表是最高频的读接口，且同一筛选条件（默认当月）会被反复拉取
+# （用户点查询、组件重挂、切库再切回）。加一个很短的 TTL 缓存可显著削减
+# 对千万级大表的重复扫描，同时不与「刚写入的新数据」严重脱节。
+# 任何写操作（导入/清空/新增/修改/删除/按日期覆盖）后都会主动失效，
+# 保证查询口径实时准确；max_entries 兜住「翻页 + 筛选组合过多」导致缓存膨胀的内存风险。
+_ROWS_CACHE = TTLCache(
+    ttl=int(os.environ.get("ROWS_CACHE_TTL", "15")),
+    max_entries=int(os.environ.get("ROWS_CACHE_MAX_ENTRIES", "150")),
+    name="rows",
+)
+
+
+def _rows_cache_key(db_key: str, **kw) -> str:
+    items = [f"{k}={kw.get(k)}" for k in sorted(kw)]
+    return "|".join([db_key] + items)
+
+
+def _rows_cache_get(key: str):
+    return _ROWS_CACHE.get(key)
+
+
+def _rows_cache_set(key: str, value) -> None:
+    _ROWS_CACHE.set(key, value)
+
+
+def invalidate_rows_cache(_db_key: str | None = None) -> None:
+    """数据写入（导入/清空/增删改）后调用，清空列表查询缓存。"""
+    _ROWS_CACHE.clear()
+
+
+def invalidate_after_write(db_key: str) -> None:
+    """任何写操作后统一失效相关缓存，保证查询 / 统计 / 候选值口径实时准确。
+
+    新增 / 修改 / 删除 / 按日期覆盖虽然只动少量行，但看板 KPI、趋势、
+    候选值（城市 / 品类 / 门店集合）与列表都可能受影响，且这些缓存 TTL 较长
+    （看板默认 1 小时），必须主动失效，否则用户会看到「数据已改、结果仍旧」。
+    """
+    invalidate_rows_cache(db_key)
+    invalidate_dashboard_cache(db_key)
+    invalidate_filter_options_cache(db_key)
 
 
 @router.get("/rows")
@@ -51,6 +97,17 @@ def list_rows(
     if provinces and "provinces" in filter_map:
         filters[filter_map["provinces"]] = provinces
 
+    # 短 TTL 缓存：相同筛选 + 分页条件直接命中，避免对大表重复扫描
+    cache_key = _rows_cache_key(
+        db_key, page=page, page_size=page_size, search=search,
+        sort_by=sort_by, sort_dir=sort_dir, cursor=cursor,
+        date_from=date_from, date_to=date_to,
+        product_codes=product_codes, cities=cities, provinces=provinces,
+    )
+    cached = _rows_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         result = query_rows(
             db_key=db_key,
@@ -62,6 +119,7 @@ def list_rows(
             date_from=date_from,
             date_to=date_to,
         )
+        _rows_cache_set(cache_key, result)
         logger.info(
             "查询 %s rows: page=%d size=%d date=[%s,%s] codes=%s cities=%s provinces=%s -> total=%d",
             db_key, page, page_size, date_from, date_to,
@@ -92,6 +150,7 @@ def create(
     """新增记录。"""
     try:
         new_id = create_row(db_key, body)
+        invalidate_after_write(db_key)
         return {"id": new_id, "message": "新增成功"}
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -110,6 +169,7 @@ def update(
     try:
         if not update_row(db_key, row_id, body):
             raise HTTPException(404, "记录不存在")
+        invalidate_after_write(db_key)
         return {"message": "更新成功"}
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -129,6 +189,7 @@ def delete(
     try:
         if not delete_row(db_key, row_id):
             raise HTTPException(404, "记录不存在")
+        invalidate_after_write(db_key)
         return {"message": "删除成功"}
     except HTTPException:
         raise
@@ -161,6 +222,7 @@ def upsert_by_date(
             db_key, overwrite_date, deleted,
         )
         new_id = create_row(db_key, data)
+        invalidate_after_write(db_key)
         return {
             "id": new_id,
             "deleted": deleted,
@@ -198,6 +260,7 @@ def clear_all_rows(
             )
             invalidate_dashboard_cache(db_key)
             invalidate_filter_options_cache(db_key)
+            invalidate_rows_cache(db_key)
             return {
                 "message": f"已删除 {month_from} 至 {month_to} 共 {deleted} 条数据",
                 "db_key": db_key,
@@ -229,7 +292,8 @@ def clear_all_rows(
         logger.warning("清空数据库 %s 的表 %s 完成", db_key, table)
         invalidate_dashboard_cache(db_key)
         invalidate_filter_options_cache(db_key)
+        invalidate_rows_cache(db_key)
         return {"message": f"已清空数据库 {db_key} 的全部数据", "db_key": db_key}
     except Exception as e:
         logger.error("清空数据库 %s 失败: %s", db_key, e)
-        raise HTTPException(500, f"清空失败: {e}")
+        raise HT

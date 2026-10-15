@@ -28,14 +28,17 @@ function scheduleFlush() {
 async function flush() {
   if (BUFFER.length === 0) return
   const batch = BUFFER.splice(0, BUFFER.length)
+  // 索引访问在 noUncheckedIndexedAccess 下可能是 undefined，先取出再做空值兜底
+  const first = batch[0]
+  const last = batch[batch.length - 1]
   try {
     await fetch(`${API_BASE}/api/log/frontend`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        level: batch[batch.length - 1].level,
+        level: last?.level ?? 'info',
         message: batch.map((e) => e.message).join('\n'),
-        context: batch[0].context,
+        context: first?.context,
       }),
     })
   } catch {
